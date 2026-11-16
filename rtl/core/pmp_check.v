@@ -17,6 +17,7 @@ module pmp_check(
     reg [34:0] lower, upper, first_byte, end_byte, region_size;
     reg trailing;
     always @(*) begin
+        bit_index=0;
         allow=1; found=0; fault_address=address;
         first_byte={3'b0,address}; end_byte=first_byte+{32'b0,size};
         // The bus has 32 address bits; a split access may not wrap to zero.

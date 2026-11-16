@@ -83,6 +83,7 @@ module muldiv_unit
 
     integer i;
     always @(*) begin
+        i = 0;
         temp_sum = 0; // Combinational scratch; never driven by a clocked process.
         if(RESET)
             shifted_op_comb = 0;
@@ -195,199 +196,39 @@ module muldiv_unit
         end
     end
 
-    always @(*) begin
-        if(RESET) begin
-            op1_M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_M_pos[width+3:0] = {{4{Operand1[width-1]}},Operand1};
-        end
-        else begin
-            op1_M_pos = op1_M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_M_neg[width+3:0] = ~op1_M_pos[width+3:0] + 1'b1;
-        end
-        else begin
-            op1_M_neg = op1_M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_2M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_2M_pos[width+3:0] = {{3{Operand1[width-1]}}, Operand1, 1'b0};
-        end
-        else begin
-            op1_2M_pos = op1_2M_pos;
+    // Capture Booth multiples on the same edge that accepts the operation.
+    // Keeping them in edge-triggered registers preserves the compute-stage
+    // boundary without level-sensitive storage or an extra start cycle.
+    wire [width+3:0] multiplicand = {{4{Operand1[width-1]}},Operand1};
+    wire [width+3:0] multiple1 = multiplicand;
+    wire [width+3:0] multiple2 = (multiplicand << 1);
+    wire [width+3:0] multiple3 = multiple2 + multiplicand;
+    wire [width+3:0] multiple4 = (multiplicand << 2);
+    wire [width+3:0] multiple5 = multiple4 + multiplicand;
+    wire [width+3:0] multiple6 = multiple5 + multiplicand;
+    wire [width+3:0] multiple7 = multiple6 + multiplicand;
+    wire [width+3:0] multiple8 = (multiplicand << 3);
+    always @(posedge CLK) begin
+        if (RESET) begin
+            op1_M_pos <= 0; op1_M_neg <= 0;
+            op1_2M_pos <= 0; op1_2M_neg <= 0;
+            op1_3M_pos <= 0; op1_3M_neg <= 0;
+            op1_4M_pos <= 0; op1_4M_neg <= 0;
+            op1_5M_pos <= 0; op1_5M_neg <= 0;
+            op1_6M_pos <= 0; op1_6M_neg <= 0;
+            op1_7M_pos <= 0; op1_7M_neg <= 0;
+            op1_8M_pos <= 0; op1_8M_neg <= 0;
+        end else if (state == IDLE && n_state == COMPUTING && MCycleOp == 2'b00) begin
+            op1_M_pos <= multiple1; op1_M_neg <= ~multiple1 + 1'b1;
+            op1_2M_pos <= multiple2; op1_2M_neg <= ~multiple2 + 1'b1;
+            op1_3M_pos <= multiple3; op1_3M_neg <= ~multiple3 + 1'b1;
+            op1_4M_pos <= multiple4; op1_4M_neg <= ~multiple4 + 1'b1;
+            op1_5M_pos <= multiple5; op1_5M_neg <= ~multiple5 + 1'b1;
+            op1_6M_pos <= multiple6; op1_6M_neg <= ~multiple6 + 1'b1;
+            op1_7M_pos <= multiple7; op1_7M_neg <= ~multiple7 + 1'b1;
+            op1_8M_pos <= multiple8; op1_8M_neg <= ~multiple8 + 1'b1;
         end
     end
-    
-    always @(*) begin
-        if(RESET) begin
-            op1_2M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_2M_neg[width+3:0] = {~op1_2M_pos[width+3:0] + 1'b1};
-        end
-        else begin
-            op1_2M_neg = op1_2M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_3M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_3M_pos[width+3:0] = op1_2M_pos + op1_M_pos;
-        end
-        else begin
-            op1_3M_pos = op1_3M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_3M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_3M_neg[width+3:0] = op1_2M_neg + op1_M_neg;
-        end
-        else begin
-            op1_3M_neg = op1_3M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_4M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_4M_pos[width+3:0] = {{2{Operand1[width-1]}}, Operand1, 2'b00};
-        end
-        else begin
-            op1_4M_pos = op1_4M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_4M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_4M_neg[width+3:0] = {~op1_4M_pos[width+3:0] + 1'b1};
-        end
-        else begin
-            op1_4M_neg = op1_4M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_5M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_5M_pos[width+3:0] = op1_4M_pos + op1_M_pos;
-        end
-        else begin
-            op1_5M_pos = op1_5M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_5M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_5M_neg[width+3:0] = op1_4M_neg + op1_M_neg;
-        end
-        else begin
-            op1_5M_neg = op1_5M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_6M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_6M_pos[width+3:0] = op1_4M_pos + op1_2M_pos;
-        end
-        else begin
-            op1_6M_pos = op1_6M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_6M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_6M_neg[width+3:0] = op1_4M_neg + op1_2M_neg;
-        end
-        else begin
-            op1_6M_neg = op1_6M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_7M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_7M_pos[width+3:0] = op1_6M_pos + op1_M_pos;
-        end
-        else begin
-            op1_7M_pos = op1_7M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_7M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_7M_neg[width+3:0] = op1_8M_neg + op1_M_pos;
-        end
-        else begin
-            op1_7M_neg = op1_7M_neg;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_8M_pos = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_8M_pos[width+3:0] = {{{Operand1[width-1]}},Operand1, 3'b000};
-        end
-        else begin
-            op1_8M_pos = op1_8M_pos;
-        end
-    end
-
-    always @(*) begin
-        if(RESET) begin
-            op1_8M_neg = 0;
-        end
-        else if(state == IDLE & n_state == COMPUTING & MCycleOp[1:0] == 2'b00) begin // signed multiplication
-            op1_8M_neg[width+3:0] = ~op1_8M_pos[width+3:0] + 1'b1;
-        end
-        else begin
-            op1_8M_neg = op1_8M_neg;
-        end
-    end
-
-
 
     always @(posedge CLK) begin : SHIFTED_OP_REG_PROCESS
         if(RESET || n_state == IDLE) begin

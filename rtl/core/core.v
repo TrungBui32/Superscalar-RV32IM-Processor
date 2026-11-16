@@ -1025,6 +1025,9 @@ module core #(
     wire [63:0] MCycle_out_ex;
 
     always @(*) begin
+        MCycleOp_ex = 2'b00;
+        Src_A_MCycle = 32'b0;
+        Src_B_MCycle = 32'b0;
         if(MCycle_ex_pipe0) begin
             MCycleOp_ex = MCycleOp_ex_pipe0;
             Src_A_MCycle = Src_A_pipe0;
@@ -1231,6 +1234,7 @@ module core #(
 
 
     always @(*) begin
+        PC_branch_ex_pipe0 = 32'b0;
         if(is_cond_jump_ex_pipe0 || is_jal_ex_pipe0) begin
             PC_branch_ex_pipe0 = pc_ex_pipe0 + imm_ex_pipe0; // jump target
         end
@@ -1241,6 +1245,7 @@ module core #(
 
 
     always @(*) begin
+        PC_branch_ex_pipe1 = 32'b0;
         if(is_cond_jump_ex_pipe1 || is_jal_ex_pipe1) begin
             PC_branch_ex_pipe1 = pc_ex_pipe1 + imm_ex_pipe1; // jump target
         end
