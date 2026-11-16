@@ -84,34 +84,23 @@ module ex_mem_reg(
       illegal_mem <= 'b0;
       instruction_mem <= 'b0;
       valid_mem <= 'b0;
-      pc_mem             <= 32'b0;
-      pcplus4_mem        <= 32'b0;
-      alu_out_mem        <= 32'b0;
-      store_data_mem     <= 32'b0;
       rd_idx_mem         <= 5'b0;
       MCycle_mem         <= 1'b0;
-      MCycle_Result_mem  <= 32'b0;
       funct3_mem         <= 3'b0;
       opcode_mem         <= 7'b0;
 
       is_cond_jump_mem   <= 1'b0;
       is_jal_mem         <= 1'b0;
       is_jalr_mem        <= 1'b0;
-      PC_branch_mem      <= 32'b0;
 
       RegWrite_mem       <= 1'b0;
       MemWrite_mem       <= 3'b0;
       MemRead_mem        <= 1'b0;
       MemToReg_mem       <= 1'b0;
       LwSizeSel_mem      <= 5'b0;
-      ALUFlags_mem       <= 3'b0;
       branch_pred_mem    <= 1'b0;
-      branch_pred_target_mem <= 32'b0;
       is_ebreak_mem      <= 1'b0;
       csr_rvalid_mem <= 1'b0;
-      csr_rdata_mem <= 'b0;
-      csr_addr_mem <= 'b0;
-      csr_wdata_mem <= 'b0;
       csr_wvalid_mem <= 'b0;
       csr_rillegal_mem <= 'b0;
 
@@ -119,34 +108,23 @@ module ex_mem_reg(
       illegal_mem <= 'b0;
       instruction_mem <= 'b0;
       valid_mem <= 'b0;
-      pc_mem             <= 32'b0;
-      pcplus4_mem        <= 32'b0;
-      alu_out_mem        <= 32'b0;
-      store_data_mem     <= 32'b0;
       rd_idx_mem         <= 5'b0;
       MCycle_mem         <= 1'b0;
-      MCycle_Result_mem  <= 32'b0;
       funct3_mem         <= 3'b0;
       opcode_mem         <= 7'b0;
 
       is_cond_jump_mem   <= 1'b0;
       is_jal_mem         <= 1'b0;
       is_jalr_mem        <= 1'b0;
-      PC_branch_mem      <= 32'b0;
 
       RegWrite_mem       <= 1'b0;
       MemWrite_mem       <= 3'b0;
       MemRead_mem        <= 1'b0;
       MemToReg_mem       <= 1'b0;
       LwSizeSel_mem      <= 5'b0;
-      ALUFlags_mem       <= 3'b0;
       branch_pred_mem    <= 1'b0;
-      branch_pred_target_mem <= 32'b0;
       is_ebreak_mem      <= 1'b0;
       csr_rvalid_mem <= 1'b0;
-      csr_rdata_mem <= 'b0;
-      csr_addr_mem <= 'b0;
-      csr_wdata_mem <= 'b0;
       csr_wvalid_mem <= 'b0;
       csr_rillegal_mem <= 'b0;
 
@@ -154,37 +132,56 @@ module ex_mem_reg(
       illegal_mem <= illegal_ex;
       instruction_mem <= instruction_ex;
       valid_mem <= valid_ex;
-      pc_mem             <= pc_ex;
-      pcplus4_mem        <= pcplus4_ex;
-      alu_out_mem        <= alu_out_ex;
-      store_data_mem     <= store_data_ex;
       rd_idx_mem         <= rd_idx_ex;
       MCycle_mem         <= MCycle_ex;
-      MCycle_Result_mem  <= MCycle_Result_ex;
       funct3_mem         <= funct3_ex;
       opcode_mem         <= opcode_ex;
 
       is_cond_jump_mem   <= is_cond_jump_ex;
       is_jal_mem         <= is_jal_ex;
       is_jalr_mem        <= is_jalr_ex;
-      PC_branch_mem      <= PC_branch_ex;
 
       RegWrite_mem       <= RegWrite_ex;
       MemWrite_mem       <= MemWrite_ex;
       MemRead_mem        <= MemRead_ex;
       MemToReg_mem       <= MemToReg_ex;
       LwSizeSel_mem      <= LwSizeSel_ex;
-      ALUFlags_mem       <= ALUFlags_ex;
       branch_pred_mem    <= branch_pred_ex;
-      branch_pred_target_mem <= branch_pred_target_ex;
       is_ebreak_mem      <= is_ebreak_ex;
       csr_rvalid_mem <= csr_rvalid_ex;
-      csr_rdata_mem <= csr_rdata_ex;
-      csr_addr_mem <= csr_addr_ex;
-      csr_wdata_mem <= csr_wdata_ex;
       csr_wvalid_mem <= csr_wvalid_ex;
       csr_rillegal_mem <= csr_rillegal_ex;
 
+    end
+  end
+  // Flush kills validity and side-effect controls above. Payload is ignored
+  // in a bubble, so it may capture without a high-fanout flush/reset mux.
+  // A real stall still holds the payload (and refreshes EX bypass operands).
+  always @(posedge clk) begin
+    if (rst) begin
+      pc_mem <= 'b0;
+      pcplus4_mem <= 'b0;
+      alu_out_mem <= 'b0;
+      store_data_mem <= 'b0;
+      MCycle_Result_mem <= 'b0;
+      PC_branch_mem <= 'b0;
+      ALUFlags_mem <= 'b0;
+      branch_pred_target_mem <= 'b0;
+      csr_rdata_mem <= 'b0;
+      csr_addr_mem <= 'b0;
+      csr_wdata_mem <= 'b0;
+    end else if (en) begin
+      pc_mem <= pc_ex;
+      pcplus4_mem <= pcplus4_ex;
+      alu_out_mem <= alu_out_ex;
+      store_data_mem <= store_data_ex;
+      MCycle_Result_mem <= MCycle_Result_ex;
+      PC_branch_mem <= PC_branch_ex;
+      ALUFlags_mem <= ALUFlags_ex;
+      branch_pred_target_mem <= branch_pred_target_ex;
+      csr_rdata_mem <= csr_rdata_ex;
+      csr_addr_mem <= csr_addr_ex;
+      csr_wdata_mem <= csr_wdata_ex;
     end
   end
 endmodule

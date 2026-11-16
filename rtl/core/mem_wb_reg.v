@@ -55,13 +55,8 @@ module mem_wb_reg(
       instruction_wb <= 'b0;
       valid_wb <= 'b0;
       csr_rvalid_wb <= 1'b0;
-      csr_rdata_wb      <= 32'b0;
-      pcplus4_wb        <= 32'b0;
-      mem_rdata_wb      <= 32'b0;
-      alu_out_wb        <= 32'b0;
       rd_idx_wb         <= 5'b0;
       MCycle_wb         <= 1'b0;
-      MCycle_Result_wb  <= 32'b0;
       funct3_wb         <= 3'b0;
       opcode_wb         <= 7'b0;
 
@@ -74,13 +69,8 @@ module mem_wb_reg(
       instruction_wb <= 'b0;
       valid_wb <= 'b0;
       csr_rvalid_wb <= 1'b0;
-      csr_rdata_wb      <= 32'b0;
-      pcplus4_wb        <= 32'b0;
-      mem_rdata_wb      <= 32'b0;
-      alu_out_wb        <= 32'b0;
       rd_idx_wb         <= 5'b0;
       MCycle_wb         <= 1'b0;
-      MCycle_Result_wb  <= 32'b0;
       funct3_wb         <= 3'b0;
       opcode_wb         <= 7'b0;
 
@@ -93,19 +83,32 @@ module mem_wb_reg(
       instruction_wb <= instruction_mem;
       valid_wb <= valid_mem;
       csr_rvalid_wb <= csr_rvalid_mem;
-      csr_rdata_wb      <= csr_rdata_mem;
-      pcplus4_wb        <= pcplus4_mem;
-      mem_rdata_wb      <= mem_rdata_mem;
-      alu_out_wb        <= alu_out_mem;
       rd_idx_wb         <= rd_idx_mem;
       MCycle_wb         <= MCycle_mem;
-      MCycle_Result_wb  <= MCycle_Result_mem;
       funct3_wb         <= funct3_mem;
       opcode_wb         <= opcode_mem;
 
       RegWrite_wb       <= RegWrite_mem;
       MemToReg_wb       <= MemToReg_mem;
       is_ebreak_wb      <= is_ebreak_mem;
+    end
+  end
+  // Flush kills validity and side-effect controls above. Payload is ignored
+  // in a bubble, so it may capture without a high-fanout flush/reset mux.
+  // A real stall still holds the payload (and refreshes EX bypass operands).
+  always @(posedge clk) begin
+    if (rst) begin
+      pcplus4_wb <= 'b0;
+      mem_rdata_wb <= 'b0;
+      alu_out_wb <= 'b0;
+      MCycle_Result_wb <= 'b0;
+      csr_rdata_wb <= 'b0;
+    end else if (en) begin
+      pcplus4_wb <= pcplus4_mem;
+      mem_rdata_wb <= mem_rdata_mem;
+      alu_out_wb <= alu_out_mem;
+      MCycle_Result_wb <= MCycle_Result_mem;
+      csr_rdata_wb <= csr_rdata_mem;
     end
   end
 endmodule

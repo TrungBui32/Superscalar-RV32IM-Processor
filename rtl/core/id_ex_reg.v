@@ -92,17 +92,12 @@ module id_ex_reg
   output reg [1:0]   MCycleOp_ex,     // optional, for MUL/DIV
   output reg         is_ebreak_ex
 );
-  // When flush=1, we insert a bubble by zeroing all registers
+  // Flush inserts a bubble by clearing validity and side-effect controls.
   always @(posedge clk) begin
     if (rst) begin
       illegal_ex <= 'b0;
       instruction_ex <= 'b0;
       valid_ex <= 'b0;
-      pc_ex        <= 32'b0;
-      pcplus4_ex   <= 32'b0;
-      rs1_val_ex   <= 32'b0;
-      rs2_val_ex   <= 32'b0;
-      imm_ex       <= 32'b0;
       rs1_idx_ex   <= 5'b0;
       rs2_idx_ex   <= 5'b0;
       rd_idx_ex    <= 5'b0;
@@ -114,13 +109,10 @@ module id_ex_reg
       is_jalr_ex   <= 1'b0;
 
       branch_pred_ex <= 1'b0;
-      branch_pred_target_ex <= 32'b0;
       is_ebreak_ex <= 1'b0;
 
       csr_rvalid_ex <= 1'b0;
 
-      csr_rdata_ex <= 32'b0;
-      csr_addr_ex <= 12'b0;
       csr_wvalid_ex <= 1'b0;
       csr_rillegal_ex <= 1'b0;
 
@@ -138,11 +130,6 @@ module id_ex_reg
       illegal_ex <= 'b0;
       instruction_ex <= 'b0;
       valid_ex <= 'b0;
-      pc_ex        <= 32'b0;
-      pcplus4_ex   <= 32'b0;
-      rs1_val_ex   <= 32'b0;
-      rs2_val_ex   <= 32'b0;
-      imm_ex       <= 32'b0;
       rs1_idx_ex   <= 5'b0;
       rs2_idx_ex   <= 5'b0;
       rd_idx_ex    <= 5'b0;
@@ -155,12 +142,9 @@ module id_ex_reg
       is_ebreak_ex <= 1'b0;
 
       branch_pred_ex <= 1'b0;
-      branch_pred_target_ex <= 32'b0;
 
       csr_rvalid_ex <= 1'b0;
 
-      csr_rdata_ex <= 32'b0;
-      csr_addr_ex <= 12'b0;
       csr_wvalid_ex <= 1'b0;
       csr_rillegal_ex <= 1'b0;
 
@@ -179,11 +163,6 @@ module id_ex_reg
       illegal_ex <= illegal_id;
       instruction_ex <= instruction_id;
       valid_ex <= valid_id;
-      pc_ex        <= pc_id;
-      pcplus4_ex   <= pcplus4_id;
-      rs1_val_ex   <= rs1_val_id;
-      rs2_val_ex   <= rs2_val_id;
-      imm_ex       <= imm_id;
       rs1_idx_ex   <= rs1_idx_id;
       rs2_idx_ex   <= rs2_idx_id;
       rd_idx_ex    <= rd_idx_id;
@@ -198,12 +177,9 @@ module id_ex_reg
       is_ebreak_ex <= is_ebreak_id;
 
       branch_pred_ex <= branch_pred_id;
-      branch_pred_target_ex <= branch_pred_target_id;
 
       csr_rvalid_ex <= csr_rvalid_id;
 
-      csr_rdata_ex <= csr_rdata_id;
-      csr_addr_ex <= csr_addr_id;
       csr_wvalid_ex <= csr_wvalid_id;
       csr_rillegal_ex <= csr_rillegal_id;
 
@@ -215,6 +191,30 @@ module id_ex_reg
       AluSrcB_ex   <= AluSrcB_id;
       AluOp_ex     <= AluOp_id;
       LwSizeSel_ex <= LwSizeSel_id;
+    end
+  end
+  // Flush kills validity and side-effect controls above. Payload is ignored
+  // in a bubble, so it may capture without a high-fanout flush/reset mux.
+  // A real stall still holds the payload (and refreshes EX bypass operands).
+  always @(posedge clk) begin
+    if (rst) begin
+      pc_ex <= 'b0;
+      pcplus4_ex <= 'b0;
+      rs1_val_ex <= 'b0;
+      rs2_val_ex <= 'b0;
+      imm_ex <= 'b0;
+      csr_rdata_ex <= 'b0;
+      csr_addr_ex <= 'b0;
+      branch_pred_target_ex <= 'b0;
+    end else if (en) begin
+      pc_ex <= pc_id;
+      pcplus4_ex <= pcplus4_id;
+      rs1_val_ex <= rs1_val_id;
+      rs2_val_ex <= rs2_val_id;
+      imm_ex <= imm_id;
+      csr_rdata_ex <= csr_rdata_id;
+      csr_addr_ex <= csr_addr_id;
+      branch_pred_target_ex <= branch_pred_target_id;
     end else begin
       rs1_val_ex <= rs1_forward_ex;
       rs2_val_ex <= rs2_forward_ex;

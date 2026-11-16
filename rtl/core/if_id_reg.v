@@ -41,8 +41,6 @@ module if_id_reg
 
   always @(posedge clk) begin
     if (rst) begin
-      pc_id      <= 32'b0;
-      pcplus4_id <= 32'b0;
       instr_id   <= NOP;
       valid_id <= 1'b0;
 
@@ -51,11 +49,8 @@ module if_id_reg
       is_jalr_id <= 1'b0;
 
       branch_pred_id <= 1'b0;
-      branch_pred_target_id <= 32'b0;
       is_ebreak_id <= 1'b0;
     end else if (flush) begin
-      pc_id      <= 32'b0;
-      pcplus4_id <= 32'b0;
       instr_id   <= NOP;
       valid_id <= 1'b0;
 
@@ -64,11 +59,8 @@ module if_id_reg
       is_jalr_id <= 1'b0;
 
       branch_pred_id <= 1'b0;
-      branch_pred_target_id <= 32'b0;
       is_ebreak_id <= 1'b0;
     end else if (en) begin
-      pc_id      <= pc_if;
-      pcplus4_id <= pcplus4_if;
       instr_id   <= instr_if;
       valid_id <= valid_if;
 
@@ -77,8 +69,21 @@ module if_id_reg
       is_jalr_id <= is_jalr_if;
 
       branch_pred_id <= branch_pred_if;
-      branch_pred_target_id <= branch_pred_target_if;
       is_ebreak_id <= is_ebreak_if;
+    end
+  end
+  // Flush kills validity and side-effect controls above. Payload is ignored
+  // in a bubble, so it may capture without a high-fanout flush/reset mux.
+  // A real stall still holds the payload (and refreshes EX bypass operands).
+  always @(posedge clk) begin
+    if (rst) begin
+      pc_id <= 'b0;
+      pcplus4_id <= 'b0;
+      branch_pred_target_id <= 'b0;
+    end else if (en) begin
+      pc_id <= pc_if;
+      pcplus4_id <= pcplus4_if;
+      branch_pred_target_id <= branch_pred_target_if;
     end
   end
 endmodule

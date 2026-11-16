@@ -2,7 +2,8 @@
 
 A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC-V processor supporting the RV32IM ISA. Targets the Xilinx Nexys 4 (Artix-7) board, synthesised and implemented in Vivado 2019.2.
 
-**Max frequency:** ~50 MHz (post-implementation, Artix-7)  
+**Historical board result:** ~50 MHz (original Artix-7 implementation). Current core OOC timing is reported below.
+
 **CoreMark score:** 2.22 CoreMark/MHz
 
 ---
@@ -252,6 +253,48 @@ The local ISA audit passed all 66 RV32 physical-environment tests in `rv32ui`,
 `6de71edb142be36319e380ce782c3d1830c65d68`. The same tests also passed with
 three deterministic random memory-stall seeds. This uses a unified RAM model
 around the core; it is not a full-board FPGA or timing validation.
+
+### Forwarding and pipeline flush timing
+
+GPR bypass selection uses registered MEM producer validity/write intent. Late
+PMP/trap decisions qualify architectural writes and squash younger work, without
+feeding back through the EX operand mux and address-hazard comparisons. During
+structural/long-operation stalls, younger stages remain held until trap delivery.
+
+Flush clears validity, instruction/control fields, and side-effect enables.
+Wide payload registers follow their normal enable independently of flush; their
+values in invalid bubbles are unspecified. Real stalls preserve live payloads,
+including EX operand refresh from forwarding. This reduces the load on flush
+nets while preserving all valid instruction data and precise traps.
+
+A Vivado 2023.2 core-only out-of-context implementation on
+`xc7a100tcsg324-1`, using a 20 ns clock, 0.1 ns user clock uncertainty, and
+`HD.CLK_SRC=BUFGCTRL_X0Y0`, measured the following with the same implementation
+flow and timing constraints:
+
+| Post-route metric | Baseline (`426e4e0`) | Forwarding/flush optimization |
+|---|---:|---:|
+| Worst setup slack | -16.454 ns | -4.487 ns |
+| Critical datapath delay | 35.751 ns | 23.969 ns |
+| Critical logic levels | 45 | 27 |
+| Hold slack | +0.035 ns | +0.037 ns |
+| LUTs | 19,722 | 19,574 |
+| Flip-flops | 6,454 | 6,519 |
+
+Routing completed without errors and hold timing passed. Setup timing still
+fails at 50 MHz. The setup-only period estimate improves from 36.454 ns to
+24.487 ns (about 27.4 to 40.8 MHz), not a frequency-sweep or full-SoC guarantee.
+External input/output delays are unconstrained in this core-only run. No
+protocol-derived false-path or multicycle exceptions were added. The remaining
+worst path runs from a PMP address register through permission/write-qualification
+logic to another PMP address register.
+
+Run the trap-priority proof and pipeline sequential equivalence checks with:
+
+```bash
+yosys -Q -s formal/trap_squash.ys
+python3 formal/pipeline_payload_equivalence.py --reference 426e4e0
+```
 
 Run the open-source functional regressions from any directory:
 
