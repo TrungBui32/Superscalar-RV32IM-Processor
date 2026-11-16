@@ -403,9 +403,9 @@ module muldiv_unit
             if(MCycleOp[1:0] == 2'b10) begin //signed division
                 quotient_sign <= Operand1[width-1] ^ Operand2[width-1]; // sign of quotient
                 remainder_sign <= Operand1[width-1]; // sign of remainder same as dividend
-                shifted_op_reg[width-1:0] <= {( Operand1[width-1] ? ( ~Operand1 + 1 ) : Operand1 )}; // make operands positive if they are negative
+                shifted_op_reg[width-1:0] <= (Operand1[width-1] ? (~Operand1 + 1'b1) : Operand1); // make operands positive if they are negative
                 shifted_op_reg[2*width-1:width] <= {width{1'b0}}; // upper half of dividend is 0
-                op2_reg[width-1:0] <= {( Operand2[width-1] ? ( ~Operand2 + 1 ) : Operand2 )};
+                op2_reg[width-1:0] <= (Operand2[width-1] ? (~Operand2 + 1'b1) : Operand2);
                 op2_reg[width] <= 1'b0;
             end
             else
