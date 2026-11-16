@@ -5,6 +5,18 @@ module mem_wb_reg(
   input  wire        en,              // 0=hold
   input  wire        flush,           // 1=bubble (zero control)
 
+  input wire csr_rvalid_mem,
+  input wire [31:0] csr_rdata_mem,
+
+  input wire  valid_mem,
+  output reg  valid_wb,
+  input wire [31:0] instruction_mem,
+  output reg [31:0] instruction_wb,
+  input wire  illegal_mem,
+  output reg  illegal_wb,
+  input wire  csr_wvalid_mem,
+  output reg  csr_wvalid_wb,
+
   // From MEM stage
   input wire [31:0] pcplus4_mem,
   input  wire [31:0] mem_rdata_mem,   // load data
@@ -21,6 +33,8 @@ module mem_wb_reg(
   input  wire        is_ebreak_mem,
 
   // To WB stage
+  output reg csr_rvalid_wb,
+  output reg [31:0] csr_rdata_wb,
   output reg  [31:0] pcplus4_wb,
   output reg  [31:0] mem_rdata_wb,
   output reg  [31:0] alu_out_wb,
@@ -36,12 +50,18 @@ module mem_wb_reg(
 );
   always @(posedge clk) begin
     if (rst) begin
+      csr_wvalid_wb <= 'b0;
+      illegal_wb <= 'b0;
+      instruction_wb <= 'b0;
+      valid_wb <= 'b0;
+      csr_rvalid_wb <= 1'b0;
+      csr_rdata_wb      <= 32'b0;
       pcplus4_wb        <= 32'b0;
       mem_rdata_wb      <= 32'b0;
       alu_out_wb        <= 32'b0;
       rd_idx_wb         <= 5'b0;
       MCycle_wb         <= 1'b0;
-      MCycle_Result_wb  <= 64'b0;
+      MCycle_Result_wb  <= 32'b0;
       funct3_wb         <= 3'b0;
       opcode_wb         <= 7'b0;
 
@@ -49,12 +69,18 @@ module mem_wb_reg(
       MemToReg_wb       <= 1'b0;
       is_ebreak_wb      <= 1'b0;
     end else if (flush) begin
+      csr_wvalid_wb <= 'b0;
+      illegal_wb <= 'b0;
+      instruction_wb <= 'b0;
+      valid_wb <= 'b0;
+      csr_rvalid_wb <= 1'b0;
+      csr_rdata_wb      <= 32'b0;
       pcplus4_wb        <= 32'b0;
       mem_rdata_wb      <= 32'b0;
       alu_out_wb        <= 32'b0;
       rd_idx_wb         <= 5'b0;
       MCycle_wb         <= 1'b0;
-      MCycle_Result_wb  <= 64'b0;
+      MCycle_Result_wb  <= 32'b0;
       funct3_wb         <= 3'b0;
       opcode_wb         <= 7'b0;
 
@@ -62,6 +88,12 @@ module mem_wb_reg(
       MemToReg_wb       <= 1'b0;
       is_ebreak_wb      <= 1'b0;
     end else if (en) begin
+      csr_wvalid_wb <= csr_wvalid_mem;
+      illegal_wb <= illegal_mem;
+      instruction_wb <= instruction_mem;
+      valid_wb <= valid_mem;
+      csr_rvalid_wb <= csr_rvalid_mem;
+      csr_rdata_wb      <= csr_rdata_mem;
       pcplus4_wb        <= pcplus4_mem;
       mem_rdata_wb      <= mem_rdata_mem;
       alu_out_wb        <= alu_out_mem;

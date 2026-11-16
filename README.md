@@ -35,7 +35,9 @@ Both pipes share a single register file and a single DMEM port; structural hazar
 | Store | SB, SH, SW |
 | Branch | BEQ, BNE, BLT, BGE, BLTU, BGEU |
 | Jump | JAL, JALR |
-| System | ECALL, EBREAK |
+| System | ECALL, EBREAK, MRET, WFI |
+| CSR (Zicsr) | CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI |
+| Ordering | FENCE, FENCE.I (Zifencei) |
 
 ### Branch Predictor
 
@@ -74,6 +76,7 @@ The processor core runs at **100 MHz**; BRAMs are clocked at **200 MHz** via Xil
 | Peripheral | File | Notes |
 |------------|------|-------|
 | UART | `uart.vhd` | TX/RX, 115200 baud |
+| Machine timer | `machine_timer.v` | 64-bit mtime/mtimecmp, msip, machine IRQs |
 | OLED display | `pmodoledrgb_bitmap.vhd` | Pmod OLED RGB bitmap |
 | Accelerometer | `ADXL362Ctrl.vhd` + `SPI_If.vhd` | ADXL362 over SPI |
 
@@ -139,6 +142,71 @@ make
 ```
 
 The build produces a `.coe` file for loading into the IMEM Block RAM. The `hex_to_coe.py` utility converts a raw Intel-HEX or binary to COE format if needed.
+
+---
+
+## M-mode CSR, traps, and interrupts
+
+The core currently implements machine mode only. `misa` is fixed to RV32IM
+(`0x40001100`); it does not advertise U/S, compressed, floating-point, or atomic
+instructions. S/H CSR address constants are retained in `csr.v` for future work,
+but accesses to those unimplemented CSRs trap instead of exposing placeholder
+registers. This is an intentional change from the earlier CSR-bank prototype.
+
+Implemented machine CSRs include `mstatus`, `misa`, `mie`, `mtvec`, `mscratch`,
+`mepc`, `mcause`, `mtval`, and hardware-owned `mip`. `mstatus.MPP` is fixed to M;
+only MIE/MPIE are writable. `mtvec` supports Direct/Vectored modes, and `mepc`
+is aligned for IALIGN=32. `mstatush` and `mcounteren` read zero. Machine ID CSRs
+read zero on this single-hart, non-commercial implementation.
+
+The 64-bit `mcycle` and `minstret` counters include RV32 high-half CSRs and
+read-only `cycle`/`instret` aliases. `mcountinhibit` supports CY/IR. Faulted
+instructions and bubbles do not retire; explicit writes to `minstret` suppress
+that instruction's automatic increment. `time/timeh` read the SoC timer.
+
+Synchronous traps cover illegal encodings/CSR accesses, M-mode ECALL, EBREAK,
+and misaligned instruction targets/load/store addresses. Trap entry updates
+`mepc`, `mcause`, `mtval`, and MIE/MPIE; `MRET` restores interrupt state and
+resumes at `mepc`. `FENCE` serializes older operations; `FENCE.I` also flushes
+prefetched instructions. `WFI` currently executes as a legal no-op.
+
+`irq_software`, `irq_timer`, and `irq_external` on `core` are synchronous,
+level-sensitive inputs. Eligible interrupts have priority external, software,
+then timer. The core drains older work and saves the next unexecuted PC before
+entering the handler. The SoC connects software/timer IRQs to `machine_timer.v`;
+external IRQ is tied low until a device interrupt controller is integrated.
+
+| MMIO address | Register | Notes |
+|---|---|---|
+| `0x02000000` | `msip` | Bit 0 asserts machine software interrupt |
+| `0x02004000` / `0x02004004` | `mtimecmp` low/high | Reset to all ones; interrupt when `mtime >= mtimecmp` |
+| `0x0200BFF8` / `0x0200BFFC` | `mtime` low/high | One tick per core clock; also readable through `time/timeh` |
+
+For RV32 timer programming, use the normal safe sequence for the 64-bit compare
+register (low = all ones, high = new high, low = new low). Clear a timer IRQ by
+moving the compare value into the future; software cannot clear MTIP/MEIP by
+writing `mip`.
+
+CSR data forwarding is enabled by default. Set core parameter
+`CSR_FORWARD_ENABLE=0` for the conservative baseline. Control writes and system
+instructions remain serialization barriers. `DEBUG_HALT_ON_EBREAK=1` restores
+the legacy testbench-only EBREAK halt behavior; the default is an architectural
+breakpoint trap. The regression testbenches select debug halt explicitly where
+needed.
+
+Run the open-source functional regressions from any directory:
+
+```bash
+./sim/run_csr_tests.sh
+```
+
+They require Icarus Verilog (`iverilog`, `vvp`) and cover decode, normalized
+forwarding, pipeline hazards, randomized architectural scoreboards, trap/MRET,
+interrupt masking/priority/vectoring/retriggering, counter behavior, and actual
+CPU + MMIO timer/software interrupt handlers. They do not certify ISA compliance
+or FPGA timing. U/S-mode, PMP/MMU, bus access-fault inputs, and a device interrupt
+controller are not implemented. Vivado-generated BRAM/clock IP remains required
+for the complete board wrapper.
 
 ---
 

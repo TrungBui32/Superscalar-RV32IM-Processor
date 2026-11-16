@@ -6,6 +6,9 @@ module if_id_reg
   input  wire        en,              // 0=hold (stall IF/ID)
   input  wire        flush,           // 1=insert NOP into ID
 
+  input wire valid_if,
+  output reg valid_id,
+
   // From IF stage
   input  wire [31:0] pc_if,
   input wire [31:0] pcplus4_if,
@@ -41,6 +44,7 @@ module if_id_reg
       pc_id      <= 32'b0;
       pcplus4_id <= 32'b0;
       instr_id   <= NOP;
+      valid_id <= 1'b0;
 
       is_cond_jump_id <= 1'b0;
       is_jal_id <= 1'b0;
@@ -53,6 +57,7 @@ module if_id_reg
       pc_id      <= 32'b0;
       pcplus4_id <= 32'b0;
       instr_id   <= NOP;
+      valid_id <= 1'b0;
 
       is_cond_jump_id <= 1'b0;
       is_jal_id <= 1'b0;
@@ -65,6 +70,7 @@ module if_id_reg
       pc_id      <= pc_if;
       pcplus4_id <= pcplus4_if;
       instr_id   <= instr_if;
+      valid_id <= valid_if;
 
       is_cond_jump_id <= is_cond_jump_if;
       is_jal_id <= is_jal_if;

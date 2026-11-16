@@ -2,13 +2,20 @@
 
 
 module decode_unit(
+    input [31:0] Instruction,
+    output reg illegal_instruction,
     input [6:0] Opcode ,
     input [2:0] Funct3 ,
     input [6:0] Funct7 ,
+    input [4:0] Rs1,          // instruction[19:15]: register index or uimm
     output reg RegWrite,		// Asserted only by instructions which write to register file (load, auipc, lui, DPImm, DPReg);
     output MemRead,		// Asserted only by load (lw)
     output reg [2:0] MemWrite,		// Asserted only by store (sw)
     output MemtoReg,		// Asserted only by load (lw)
+    output uses_rs1,
+    output uses_rs2,
+    output csr_rvalid,       // Valid CSR address access, including CSRRW rd=x0
+    output csr_wvalid,       // Decoded write intent; qualify again at MEM
     output reg [4:0] LwSizeSel,        // 0001 for lb/lbu, 0011 for lh/lhu, 1111 for lw
     output reg [1:0] ALUSrcA, 	// Needed for lui, auipic. Refer to the microarchitecture for its use. Uncomment wire and port map in RV.v as well
     output reg [1:0] ALUSrcB,		// Asserted by all instructions which use an immediate (load, store, lui, auipc, DPImm). Needs to be expanded to a 2-bit signal to support link functionality for jal, jalr. Change wire width in RV.v as well
@@ -31,6 +38,7 @@ module decode_unit(
     localparam JALR_opcode   = 7'b1100111;
     localparam LUI_opcode    = 7'b0110111;
     localparam AUIPC_opcode  = 7'b0010111;
+    localparam CSR_opcode    = 7'b1110011;  // I-type instruction
 
     localparam Funct3_add_sub_reg   = 3'b000;
     localparam Funct3_add_imm   = 3'b000;
@@ -49,6 +57,12 @@ module decode_unit(
     localparam Funct3_divu = 3'b101; // for divu
     localparam Funct3_rem = 3'b110; // for rem
     localparam Funct3_remu = 3'b111; // for div
+    localparam Func3_CSRRW = 3'b001;
+    localparam Func3_CSRRS = 3'b010;
+    localparam Func3_CSRRC = 3'b011;
+    localparam Func3_CSRRWI = 3'b101;
+    localparam Func3_CSRRSI = 3'b110;
+    localparam Func3_CSRRCI = 3'b111;
 
     localparam Funct7_add   = 7'b0000000;
     localparam Funct7_sub   = 7'b0100000;
@@ -69,6 +83,7 @@ module decode_unit(
             AUIPC_opcode:  RegWrite = 1'b1;
             JAL_opcode:    RegWrite = 1'b1;
             JALR_opcode:   RegWrite = 1'b1;
+            CSR_opcode:    RegWrite = csr_rvalid;
             default:       RegWrite = 1'b0;
         endcase
     end
@@ -90,7 +105,6 @@ module decode_unit(
 
     assign MemRead = (Opcode == Load_opcode);
     assign MemtoReg = (Opcode == Load_opcode);
-    assign is_store = (Opcode == Store_opcode);
 
     always @(*) begin
         if(Opcode == Load_opcode) begin
@@ -113,6 +127,7 @@ module decode_unit(
         case(Opcode)
             LUI_opcode:   ALUSrcA = 2'b01; // U-type
             AUIPC_opcode: ALUSrcA = 2'b10; // AUIPC
+            CSR_opcode: ALUSrcA = (csr_rvalid && Funct3[2]) ? 2'b11 : 2'b00;
             default:      ALUSrcA = 2'b00; // Other types
         endcase
     end
@@ -127,6 +142,7 @@ module decode_unit(
             LUI_opcode:   ALUSrcB = 2'b01; // imm
             AUIPC_opcode: ALUSrcB = 2'b01; // imm
             Branch_opcode: ALUSrcB = 2'b00; // reg
+            CSR_opcode: ALUSrcB = 2'b10; // old CSR value
             default:      ALUSrcB = 2'b00; // reg
         endcase
     end
@@ -193,6 +209,13 @@ module decode_unit(
             Branch_opcode: ALUControl = 4'b0001; // sub (for comparison)
             JAL_opcode: ALUControl = 4'b0000; // add (for address calculation)
             LUI_opcode: ALUControl = 4'b0000; // add (for loading immediate)
+            CSR_opcode: begin
+                case (Funct3)
+                    Func3_CSRRS, Func3_CSRRSI: ALUControl = 4'b1100;
+                    Func3_CSRRC, Func3_CSRRCI: ALUControl = 4'b1111; // B & ~A
+                    default: ALUControl = 4'b0000; // CSRRW[I] uses operand bypass
+                endcase
+            end
             AUIPC_opcode: ALUControl = 4'b0000; //
             default: ALUControl = 4'bxxxx;
     endcase
@@ -222,6 +245,49 @@ module decode_unit(
         else
             MCycleOp = 2'bxx; // Don't care
     end
+
+    assign csr_rvalid = (Opcode == CSR_opcode) &&
+                  ((Funct3 == Func3_CSRRW)  ||
+                   (Funct3 == Func3_CSRRS)  ||
+                   (Funct3 == Func3_CSRRC)  ||
+                   (Funct3 == Func3_CSRRWI) ||
+                   (Funct3 == Func3_CSRRSI) ||
+                   (Funct3 == Func3_CSRRCI));
+    // Real GPR sources only: CSR immediates are not register operands.
+    assign uses_rs1 = (Opcode == R_type_opcode) || (Opcode == I_type_opcode) ||
+                      (Opcode == Load_opcode) || (Opcode == Store_opcode) ||
+                      (Opcode == Branch_opcode) || (Opcode == JALR_opcode) ||
+                      (csr_rvalid && !Funct3[2]);
+    assign uses_rs2 = (Opcode == R_type_opcode) || (Opcode == Store_opcode) ||
+                      (Opcode == Branch_opcode);
+
+    // Encoding legality; privilege/CSR existence is checked by the CSR bank.
+    always @(*) begin
+        illegal_instruction = 1'b0;
+        case (Opcode)
+            R_type_opcode: illegal_instruction = !((Funct7 == 0) || (Funct7 == 1) ||
+                (Funct7 == 7'h20 && (Funct3 == 0 || Funct3 == 5)));
+            I_type_opcode: begin
+                if (Funct3 == 1) illegal_instruction = (Funct7 != 0);
+                else if (Funct3 == 5) illegal_instruction = !(Funct7 == 0 || Funct7 == 7'h20);
+            end
+            Load_opcode: illegal_instruction = !(Funct3 == 0 || Funct3 == 1 || Funct3 == 2 || Funct3 == 4 || Funct3 == 5);
+            Store_opcode: illegal_instruction = !(Funct3 == 0 || Funct3 == 1 || Funct3 == 2);
+            Branch_opcode: illegal_instruction = (Funct3 == 2 || Funct3 == 3);
+            JALR_opcode: illegal_instruction = (Funct3 != 0);
+            LUI_opcode, AUIPC_opcode, JAL_opcode: begin end
+            7'h0f: illegal_instruction = !(Funct3 == 0 || Funct3 == 1);
+            CSR_opcode: illegal_instruction = !csr_rvalid &&
+                !(Instruction == 32'h00000073 || Instruction == 32'h00100073 ||
+                  Instruction == 32'h30200073 || Instruction == 32'h10500073);
+            default: illegal_instruction = 1'b1;
+        endcase
+    end
+
+    // Register forms test the register INDEX, not its runtime value.
+    // Immediate forms use the same instruction field as a five-bit uimm.
+    assign csr_wvalid = csr_rvalid &&
+                        ((Funct3[1:0] == 2'b01) || (Rs1 != 5'd0));
   
 endmodule
 

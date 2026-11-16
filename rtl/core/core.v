@@ -7,11 +7,17 @@
 
 
 module core #(
-    parameter PC_INIT = 32'h00400000
+    parameter PC_INIT = 32'h00400000,
+    parameter CSR_FORWARD_ENABLE = 1'b1,
+    parameter DEBUG_HALT_ON_EBREAK = 1'b0
 ) (
     input CLK,
     input RESET,
-    //input Interrupt,      // for optional future use.
+    // IRQ inputs must be synchronous to CLK (synchronize external pins in SoC).
+    input irq_software,
+    input irq_timer,
+    input irq_external,
+    input [63:0] time_value,
     input [31:0] Instr_pipe0,
     input [31:0] Instr_pipe1,
     input [31:0] ReadData_in_pipe0,       // Name mangled to support lb/lbu/lh/lhu
@@ -37,6 +43,8 @@ module core #(
     localparam jal_opcode = 7'b1101111;
     localparam jalr_opcode= 7'b1100111;
     localparam branch_opcode = 7'b1100011;
+    localparam CSR_opcode    = 7'b1110011;
+
     localparam Funct3_sw  = 3'b010;
     localparam Funct3_lw  = 3'b010;
     localparam Funct3_mul = 3'b000; // for mul
@@ -47,7 +55,12 @@ module core #(
     localparam Funct3_divu = 3'b101; // for divu
     localparam Funct3_rem = 3'b110; // for rem
     localparam Funct3_remu = 3'b111; // for remu
-
+    localparam Func3_CSRRW = 3'b001;
+    localparam Func3_CSRRS = 3'b010;
+    localparam Func3_CSRRC = 3'b011;
+    localparam Func3_CSRRWI = 3'b101;
+    localparam Func3_CSRRSI = 3'b110;
+    localparam Func3_CSRRCI = 3'b111;
 
     // Forwarding Unit parameters
     parameter SEL_IDEX  = 4'b0000; // use ID/EX value
@@ -63,6 +76,25 @@ module core #(
     parameter SEL_MCYCLE_MEMWB_PIPE1 = 4'b1010;
 
 
+
+    wire valid_id_pipe0;
+    wire illegal_id_pipe0;
+    wire valid_ex_pipe0, illegal_ex_pipe0;
+    wire [31:0] instruction_ex_pipe0;
+    wire valid_mem_pipe0, illegal_mem_pipe0;
+    wire [31:0] instruction_mem_pipe0;
+    wire valid_wb_pipe0, illegal_wb_pipe0;
+    wire [31:0] instruction_wb_pipe0;
+    wire csr_wvalid_wb_pipe0;
+    wire valid_id_pipe1;
+    wire illegal_id_pipe1;
+    wire valid_ex_pipe1, illegal_ex_pipe1;
+    wire [31:0] instruction_ex_pipe1;
+    wire valid_mem_pipe1, illegal_mem_pipe1;
+    wire [31:0] instruction_mem_pipe1;
+    wire valid_wb_pipe1, illegal_wb_pipe1;
+    wire [31:0] instruction_wb_pipe1;
+    wire csr_wvalid_wb_pipe1;
 
     //RV Signals
     wire [31:0] ReadData;
@@ -123,10 +155,10 @@ module core #(
     assign Instr_if_pipe1 = Instr_pipe1;
 
     wire is_ebreak_if_pipe0;
-    assign is_ebreak_if_pipe0 = (Instr_if_pipe0 == 32'h00100073);
+    assign is_ebreak_if_pipe0 = (DEBUG_HALT_ON_EBREAK && Instr_if_pipe0 == 32'h00100073);
 
     wire is_ebreak_if_pipe1;
-    assign is_ebreak_if_pipe1 = (Instr_if_pipe1 == 32'h00100073);
+    assign is_ebreak_if_pipe1 = (DEBUG_HALT_ON_EBREAK && Instr_if_pipe1 == 32'h00100073);
 
     
     wire branch_pred_if;
@@ -305,6 +337,22 @@ module core #(
     wire id_is_store_pipe1;
     assign id_is_store_pipe1 = (MemWrite_id_pipe1)? 1'b1 : 1'b0;
 
+    wire [11:0] csr_addr_id_pipe0;
+    wire [31:0] csr_rdata_id_pipe0;
+    wire csr_rvalid_id_pipe0;
+    wire csr_wvalid_id_pipe0;
+    wire csr_rillegal_id_pipe0;
+    wire csr_rillegal_bank_id_pipe0;
+    wire uses_rs1_id_pipe0;
+    wire uses_rs2_id_pipe0;
+    wire [11:0] csr_addr_id_pipe1;
+    wire [31:0] csr_rdata_id_pipe1;
+    wire csr_rvalid_id_pipe1;
+    wire csr_wvalid_id_pipe1;
+    wire csr_rillegal_id_pipe1;
+    wire csr_rillegal_bank_id_pipe1;
+    wire uses_rs1_id_pipe1;
+    wire uses_rs2_id_pipe1;
 
     //EX stage signals
     wire [31:0] pc_ex_pipe0;
@@ -397,6 +445,18 @@ module core #(
     wire ex_is_store_pipe1;
     assign ex_is_store_pipe1 = (MemWrite_ex_pipe1)? 1'b1 : 1'b0;
 
+    wire [11:0] csr_addr_ex_pipe0;
+    wire [31:0] csr_rdata_ex_pipe0;
+    wire [31:0] csr_wdata_ex_pipe0;
+    wire csr_wvalid_ex_pipe0;
+    wire csr_rillegal_ex_pipe0;
+    wire csr_rvalid_ex_pipe0;
+    wire [11:0] csr_addr_ex_pipe1;
+    wire [31:0] csr_rdata_ex_pipe1;
+    wire [31:0] csr_wdata_ex_pipe1;
+    wire csr_wvalid_ex_pipe1;
+    wire csr_rillegal_ex_pipe1;
+    wire csr_rvalid_ex_pipe1;
 
     //MEM stage signals
     reg [31:0] mem_rdata_mem_pipe0;
@@ -463,6 +523,29 @@ module core #(
     wire        MemToReg_mem_pipe1;
     wire [4:0]  LwSizeSel_mem_pipe1;
     wire [3:0]  sel_MEM_store_data_pipe1;
+
+    wire [11:0] csr_waddr_mem_pipe0;
+    wire [31:0] csr_wdata_mem_pipe0;
+    wire [31:0] csr_rdata_mem_pipe0;
+    wire csr_wvalid_mem_pipe0; // intent latched in EX/MEM
+    wire csr_wfire_mem_pipe0; // qualified request sent to the bank
+    wire csr_rillegal_mem_pipe0;
+    wire csr_willegal_mem_pipe0;
+    wire csr_rvalid_mem_pipe0;
+    wire csr_error_mem_pipe0;
+    wire [31:0] csr_rdata_wb_pipe0;
+    wire csr_rvalid_wb_pipe0;
+    wire [11:0] csr_waddr_mem_pipe1;
+    wire [31:0] csr_wdata_mem_pipe1;
+    wire [31:0] csr_rdata_mem_pipe1;
+    wire csr_wvalid_mem_pipe1; // intent latched in EX/MEM
+    wire csr_wfire_mem_pipe1; // qualified request sent to the bank
+    wire csr_rillegal_mem_pipe1;
+    wire csr_willegal_mem_pipe1;
+    wire csr_rvalid_mem_pipe1;
+    wire csr_error_mem_pipe1;
+    wire [31:0] csr_rdata_wb_pipe1;
+    wire csr_rvalid_wb_pipe1;
 
     //WB stage signals
     wire [31:0] pcplus4_wb_pipe0;
@@ -545,7 +628,7 @@ module core #(
 
     // WriteData logic
     assign WriteData_out_pipe0 = store_data_mem_pipe0;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe0 = (MEM_WB_en_pipe0)? MemWrite_mem_pipe0 : 3'b000; // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe0 = (MEM_WB_en_pipe0 && !MEM_WB_flush_pipe0)? MemWrite_mem_pipe0 : 3'b000; // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe0;
     assign store_data_ex_pipe0 = rs2_val_ex_forward_pipe0;
 
@@ -574,7 +657,7 @@ module core #(
 
     // WriteData logic
     assign WriteData_out_pipe1 = store_data_mem_pipe1;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe1 = (MEM_WB_en_pipe1)? MemWrite_mem_pipe1 : 3'b000; // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe1 = (MEM_WB_en_pipe1 && !MEM_WB_flush_pipe1)? MemWrite_mem_pipe1 : 3'b000; // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe1;
     assign store_data_ex_pipe1 = rs2_val_ex_forward_pipe1;
 
@@ -619,10 +702,186 @@ module core #(
     assign rs2_id_pipe1 = Instr_id_pipe1[24:20];
     assign rd_id_pipe1 = Instr_id_pipe1[11:7];
 
+    wire branch_pred_mem_pipe0;
+    wire branch_pred_mem_pipe1;
+
+    // Control CSR writes remain barriers; data CSR accesses bypass older
+    // EX/MEM writes. One CSR per issue group keeps same-cycle RMW ordered.
+    wire csr_wait, csr_split;
+    wire csr_trap_pipe0, csr_trap_pipe1, csr_trap_fire;
+    wire [31:0] csr_trap_pc, csr_trap_vector;
+    wire [3:0] csr_forward_valid;
+    wire [47:0] csr_forward_addr;
+    wire [127:0] csr_forward_data;
+    wire pipeline_can_advance = locked && imem_ready && dmem_ready &&
+                                !MCycle_Busy && !is_ebreak_wb && !RESET;
+    wire csr_pending = csr_rvalid_ex_pipe0 || csr_rvalid_ex_pipe1 ||
+                       csr_rvalid_mem_pipe0 || csr_rvalid_mem_pipe1;
+    wire csr_older_pending = valid_ex_pipe0 || valid_ex_pipe1 || valid_mem_pipe0 || valid_mem_pipe1;
+    function csr_control_write;
+        input [11:0] addr;
+        begin
+            case (addr)
+                12'h300, 12'h100, 12'h301, 12'h302, 12'h303,
+                12'h304, 12'h104, 12'h344, 12'h144,
+                12'h305, 12'h105, 12'h306, 12'h106:
+                    csr_control_write = 1'b1;
+                default: csr_control_write = 1'b0;
+            endcase
+        end
+    endfunction
+    function serial_instruction;
+        input [31:0] insn;
+        begin
+            serial_instruction = (insn[6:0] == 7'h73 && insn[14:12] == 0) ||
+                                 (insn[6:0] == 7'h0f);
+        end
+    endfunction
+    function counter_access;
+        input [11:0] addr;
+        begin counter_access = addr[11:8] == 4'hb || addr[11:8] == 4'hc || addr == 12'h320; end
+    endfunction
+    wire system_requested =
+        (valid_id_pipe0 && (serial_instruction(Instr_id_pipe0) || illegal_id_pipe0)) ||
+        (valid_id_pipe1 && (serial_instruction(Instr_id_pipe1) || illegal_id_pipe1));
+    wire system_pending =
+        (valid_ex_pipe0 && (serial_instruction(instruction_ex_pipe0) || illegal_ex_pipe0)) ||
+        (valid_ex_pipe1 && (serial_instruction(instruction_ex_pipe1) || illegal_ex_pipe1)) ||
+        (valid_mem_pipe0 && (serial_instruction(instruction_mem_pipe0) || illegal_mem_pipe0)) ||
+        (valid_mem_pipe1 && (serial_instruction(instruction_mem_pipe1) || illegal_mem_pipe1));
+    wire counter_requested = (csr_rvalid_id_pipe0 && counter_access(csr_addr_id_pipe0)) ||
+                             (csr_rvalid_id_pipe1 && counter_access(csr_addr_id_pipe1));
+    wire wb_pending = valid_wb_pipe0 || valid_wb_pipe1;
+    wire irq_pending;
+    wire [31:0] irq_cause;
+    wire irq_fire;
+    wire mret_fire, fencei_fire;
+    wire [31:0] machine_return_pc;
+    wire [31:0] trap_cause, trap_value;
+    reg [31:0] sync_cause0, sync_cause1, sync_value0, sync_value1;
+    reg sync_fault0, sync_fault1;
+    wire [1:0] retire_count;
+    function suppress_instret;
+        input [31:0] insn;
+        input wvalid;
+        begin suppress_instret = wvalid && (insn[31:20] == 12'hb02 || insn[31:20] == 12'hb82); end
+    endfunction
+    assign retire_count = {1'b0,(valid_wb_pipe0 && MEM_WB_en_pipe0 && !suppress_instret(instruction_wb_pipe0,csr_wvalid_wb_pipe0))} +
+                          {1'b0,(valid_wb_pipe1 && MEM_WB_en_pipe1 && !suppress_instret(instruction_wb_pipe1,csr_wvalid_wb_pipe1))};
+    wire csr_control_pending =
+        (csr_wvalid_ex_pipe0 && csr_control_write(csr_addr_ex_pipe0)) ||
+        (csr_wvalid_ex_pipe1 && csr_control_write(csr_addr_ex_pipe1)) ||
+        (csr_wvalid_mem_pipe0 && csr_control_write(csr_waddr_mem_pipe0)) ||
+        (csr_wvalid_mem_pipe1 && csr_control_write(csr_waddr_mem_pipe1));
+    wire csr_control_requested =
+        (csr_wvalid_id_pipe0 && csr_control_write(csr_addr_id_pipe0)) ||
+        (csr_wvalid_id_pipe1 && csr_control_write(csr_addr_id_pipe1));
+    wire csr_fault_pending =
+        (csr_rvalid_ex_pipe0 && csr_rillegal_ex_pipe0) ||
+        (csr_rvalid_ex_pipe1 && csr_rillegal_ex_pipe1) ||
+        (csr_rvalid_mem_pipe0 && csr_rillegal_mem_pipe0) ||
+        (csr_rvalid_mem_pipe1 && csr_rillegal_mem_pipe1);
+    assign csr_wait = irq_pending || system_pending ||
+        ((system_requested || counter_requested) && (csr_older_pending || wb_pending)) ||
+        (CSR_FORWARD_ENABLE ?
+         (csr_fault_pending || csr_control_pending || (csr_control_requested && csr_older_pending)) :
+         (csr_pending || ((csr_rvalid_id_pipe0 || csr_rvalid_id_pipe1) && csr_older_pending)));
+    wire serial_id0 = csr_rvalid_id_pipe0 || (valid_id_pipe0 && (serial_instruction(Instr_id_pipe0) || illegal_id_pipe0));
+    wire serial_id1 = csr_rvalid_id_pipe1 || (valid_id_pipe1 && (serial_instruction(Instr_id_pipe1) || illegal_id_pipe1));
+    assign csr_split = serial_id0 || (serial_id1 && valid_id_pipe0);
+
+    assign csr_forward_addr = {csr_addr_ex_pipe1, csr_addr_ex_pipe0,
+                               csr_waddr_mem_pipe1, csr_waddr_mem_pipe0};
+    assign csr_forward_data = {csr_wdata_ex_pipe1, csr_wdata_ex_pipe0,
+                               csr_wdata_mem_pipe1, csr_wdata_mem_pipe0};
+    // Forward intent even while MEM is held; ID also holds on those cycles.
+    // Never let a faulting or wrong-path producer influence a surviving read.
+    assign csr_forward_valid[0] = CSR_FORWARD_ENABLE && csr_wvalid_mem_pipe0 &&
+        !csr_rillegal_mem_pipe0 && !csr_trap_fire;
+    assign csr_forward_valid[1] = CSR_FORWARD_ENABLE && csr_wvalid_mem_pipe1 &&
+        !csr_rillegal_mem_pipe1 && !csr_rillegal_mem_pipe0 && !csr_trap_fire;
+    assign csr_forward_valid[2] = CSR_FORWARD_ENABLE && csr_wvalid_ex_pipe0 &&
+        !csr_rillegal_ex_pipe0 && !csr_fault_pending_mem && !mem_redirect;
+    assign csr_forward_valid[3] = CSR_FORWARD_ENABLE && csr_wvalid_ex_pipe1 &&
+        !csr_rillegal_ex_pipe1 && !csr_rillegal_ex_pipe0 && !csr_fault_pending_mem && !mem_redirect;
+    wire csr_fault_pending_mem = csr_trap_pipe0 || csr_trap_pipe1;
+    always @(*) begin
+        sync_fault0 = 1'b0;
+        sync_cause0 = 32'd2;
+        sync_value0 = instruction_mem_pipe0;
+        if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0) sync_fault0 = 1'b1;
+        else if (instruction_mem_pipe0 == 32'h00000073) begin
+            sync_fault0 = 1'b1; sync_cause0 = 32'd11; sync_value0 = 0;
+        end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe0 == 32'h00100073) begin
+            sync_fault0 = 1'b1; sync_cause0 = 32'd3; sync_value0 = pc_mem_pipe0;
+        end else if ((is_jal_mem_pipe0 || is_jalr_mem_pipe0 ||
+                     (is_cond_jump_mem_pipe0 && PCSrc_mem_pipe0[0])) && PC_branch_mem_pipe0[1:0] != 0) begin
+            sync_fault0 = 1'b1; sync_cause0 = 0; sync_value0 = PC_branch_mem_pipe0;
+        end else if ((MemRead_mem_pipe0 || |MemWrite_mem_pipe0) &&
+                     ((funct3_mem_pipe0[1:0] == 2 && alu_out_mem_pipe0[1:0] != 0) ||
+                      (funct3_mem_pipe0[1:0] == 1 && alu_out_mem_pipe0[0]))) begin
+            sync_fault0 = 1'b1; sync_cause0 = MemRead_mem_pipe0 ? 32'd4 : 32'd6;
+            sync_value0 = alu_out_mem_pipe0;
+        end
+    end
+    always @(*) begin
+        sync_fault1 = 1'b0;
+        sync_cause1 = 32'd2;
+        sync_value1 = instruction_mem_pipe1;
+        if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1) sync_fault1 = 1'b1;
+        else if (instruction_mem_pipe1 == 32'h00000073) begin
+            sync_fault1 = 1'b1; sync_cause1 = 32'd11; sync_value1 = 0;
+        end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe1 == 32'h00100073) begin
+            sync_fault1 = 1'b1; sync_cause1 = 32'd3; sync_value1 = pc_mem_pipe1;
+        end else if ((is_jal_mem_pipe1 || is_jalr_mem_pipe1 ||
+                     (is_cond_jump_mem_pipe1 && PCSrc_mem_pipe1[0])) && PC_branch_mem_pipe1[1:0] != 0) begin
+            sync_fault1 = 1'b1; sync_cause1 = 0; sync_value1 = PC_branch_mem_pipe1;
+        end else if ((MemRead_mem_pipe1 || |MemWrite_mem_pipe1) &&
+                     ((funct3_mem_pipe1[1:0] == 2 && alu_out_mem_pipe1[1:0] != 0) ||
+                      (funct3_mem_pipe1[1:0] == 1 && alu_out_mem_pipe1[0]))) begin
+            sync_fault1 = 1'b1; sync_cause1 = MemRead_mem_pipe1 ? 32'd4 : 32'd6;
+            sync_value1 = alu_out_mem_pipe1;
+        end
+    end
+    assign csr_trap_pipe0 = valid_mem_pipe0 && sync_fault0;
+    assign csr_trap_pipe1 = valid_mem_pipe1 && sync_fault1 &&
+        !(mem_redirect && (is_cond_jump_mem_pipe0 || is_jal_mem_pipe0 || is_jalr_mem_pipe0));
+    assign mret_fire = pipeline_can_advance && !csr_trap_pipe0 && !csr_trap_pipe1 &&
+        ((valid_mem_pipe0 && instruction_mem_pipe0 == 32'h30200073) ||
+         (valid_mem_pipe1 && instruction_mem_pipe1 == 32'h30200073));
+    assign fencei_fire = pipeline_can_advance &&
+        ((valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f && instruction_mem_pipe0[14:12] == 1) ||
+         (valid_mem_pipe1 && instruction_mem_pipe1[6:0] == 7'h0f && instruction_mem_pipe1[14:12] == 1));
+    assign irq_fire = pipeline_can_advance && irq_pending && !csr_older_pending && !wb_pending;
+    assign csr_trap_fire = pipeline_can_advance && (csr_trap_pipe0 || csr_trap_pipe1 || irq_fire);
+    assign csr_trap_pc = irq_fire ? (valid_id_pipe0 ? pc_id_pipe0 : valid_id_pipe1 ? pc_id_pipe1 : PC) :
+                         csr_trap_pipe0 ? pc_mem_pipe0 : pc_mem_pipe1;
+    assign trap_cause = irq_fire ? irq_cause : csr_trap_pipe0 ? sync_cause0 : sync_cause1;
+    assign trap_value = irq_fire ? 32'b0 : csr_trap_pipe0 ? sync_value0 : sync_value1;
+
+    assign csr_rillegal_id_pipe0 = csr_rillegal_bank_id_pipe0 ||
+        (csr_wvalid_id_pipe0 && csr_addr_id_pipe0[11:10] == 2'b11);
+    assign csr_addr_id_pipe0 = Instr_id_pipe0[31:20];
+    assign csr_wdata_ex_pipe0 = (funct3_ex_pipe0[1:0] == 2'b01) ?
+                                 Src_A_pipe0 : ALUResult_ex_pipe0;
+    assign csr_wfire_mem_pipe0 = csr_wvalid_mem_pipe0 &&
+        MEM_WB_en_pipe0 && !MEM_WB_flush_pipe0 && !csr_rillegal_mem_pipe0 && !csr_trap_fire && !RESET;
+    assign csr_error_mem_pipe0 = csr_rillegal_mem_pipe0 || csr_willegal_mem_pipe0 || (valid_mem_pipe0 && sync_fault0);
+
+    assign csr_rillegal_id_pipe1 = csr_rillegal_bank_id_pipe1 ||
+        (csr_wvalid_id_pipe1 && csr_addr_id_pipe1[11:10] == 2'b11);
+    assign csr_addr_id_pipe1 = Instr_id_pipe1[31:20];
+    assign csr_wdata_ex_pipe1 = (funct3_ex_pipe1[1:0] == 2'b01) ?
+                                 Src_A_pipe1 : ALUResult_ex_pipe1;
+    assign csr_wfire_mem_pipe1 = csr_wvalid_mem_pipe1 &&
+        MEM_WB_en_pipe1 && !MEM_WB_flush_pipe1 && !csr_rillegal_mem_pipe1 && !csr_trap_fire && !RESET;
+    assign csr_error_mem_pipe1 = csr_rillegal_mem_pipe1 || csr_willegal_mem_pipe1 || (valid_mem_pipe1 && sync_fault1);
 
     // RegFile WD logic
     always @(*) begin
-        if(MemToReg_wb_pipe0) 
+        if(csr_rvalid_wb_pipe0)
+            WD_pipe0 = csr_rdata_wb_pipe0;
+        else if(MemToReg_wb_pipe0)
             WD_pipe0 = mem_rdata_wb_pipe0;
         else if(MCycle_wb_pipe0)
             WD_pipe0 = MCycle_Result_wb_pipe0[31:0];
@@ -632,7 +891,9 @@ module core #(
 
     // RegFile WD logic
     always @(*) begin
-        if(MemToReg_wb_pipe1) 
+        if(csr_rvalid_wb_pipe1)
+            WD_pipe1 = csr_rdata_wb_pipe1;
+        else if(MemToReg_wb_pipe1)
             WD_pipe1 = mem_rdata_wb_pipe1;
         else if(MCycle_wb_pipe1)
             WD_pipe1 = MCycle_Result_wb_pipe1[31:0];
@@ -761,7 +1022,10 @@ module core #(
 
     //ALU connections
     always @(*) begin
-        if(AluSrcA_ex_pipe0 == 2'b01) begin
+        if(AluSrcA_ex_pipe0 == 2'b11) begin
+            Src_A_pipe0 = {27'b0, rs1_idx_ex_pipe0};
+        end
+        else if(AluSrcA_ex_pipe0 == 2'b01) begin
             Src_A_pipe0 = 32'b0;
         end
         else if(AluSrcA_ex_pipe0 == 2'b10) begin
@@ -790,7 +1054,10 @@ module core #(
 
 
     always @(*) begin
-        if(AluSrcB_ex_pipe0 == 2'b01) begin
+        if(AluSrcB_ex_pipe0 == 2'b10) begin
+            Src_B_pipe0 = csr_rdata_ex_pipe0;
+        end
+        else if(AluSrcB_ex_pipe0 == 2'b01) begin
             Src_B_pipe0 = imm_ex_pipe0;
         end
         else if(AluSrcB_ex_pipe0 == 2'b00) begin
@@ -804,7 +1071,10 @@ module core #(
 
     //ALU connections
     always @(*) begin
-        if(AluSrcA_ex_pipe1 == 2'b01) begin
+        if(AluSrcA_ex_pipe1 == 2'b11) begin
+            Src_A_pipe1 = {27'b0, rs1_idx_ex_pipe1};
+        end
+        else if(AluSrcA_ex_pipe1 == 2'b01) begin
             Src_A_pipe1 = 32'b0;
         end
         else if(AluSrcA_ex_pipe1 == 2'b10) begin
@@ -832,7 +1102,10 @@ module core #(
     end
 
     always @(*) begin
-        if(AluSrcB_ex_pipe1 == 2'b01) begin
+        if(AluSrcB_ex_pipe1 == 2'b10) begin
+            Src_B_pipe1 = csr_rdata_ex_pipe1;
+        end
+        else if(AluSrcB_ex_pipe1 == 2'b01) begin
             Src_B_pipe1 = imm_ex_pipe1;
         end
         else if(AluSrcB_ex_pipe1 == 2'b00) begin
@@ -844,8 +1117,8 @@ module core #(
     end
 
 
-    assign alu_out_ex_pipe0 = (is_jal_ex_pipe0 || is_jalr_ex_pipe0) ? pcplus4_ex_pipe0 : ALUResult_ex_pipe0;
-    assign alu_out_ex_pipe1 = (is_jal_ex_pipe1 || is_jalr_ex_pipe1) ? pcplus4_ex_pipe1 : ALUResult_ex_pipe1;
+    assign alu_out_ex_pipe0 = csr_rvalid_ex_pipe0 ? csr_rdata_ex_pipe0 : (is_jal_ex_pipe0 || is_jalr_ex_pipe0) ? pcplus4_ex_pipe0 : ALUResult_ex_pipe0;
+    assign alu_out_ex_pipe1 = csr_rvalid_ex_pipe1 ? csr_rdata_ex_pipe1 : (is_jal_ex_pipe1 || is_jalr_ex_pipe1) ? pcplus4_ex_pipe1 : ALUResult_ex_pipe1;
 
 
 
@@ -854,7 +1127,7 @@ module core #(
             PC_branch_ex_pipe0 = pc_ex_pipe0 + imm_ex_pipe0; // jump target
         end
         else if(is_jalr_ex_pipe0) begin
-            PC_branch_ex_pipe0 = Src_A_pipe0 + imm_ex_pipe0;
+            PC_branch_ex_pipe0 = (Src_A_pipe0 + imm_ex_pipe0) & 32'hfffffffe;
         end
     end
 
@@ -864,7 +1137,7 @@ module core #(
             PC_branch_ex_pipe1 = pc_ex_pipe1 + imm_ex_pipe1; // jump target
         end
         else if(is_jalr_ex_pipe1) begin
-            PC_branch_ex_pipe1 = Src_A_pipe1 + imm_ex_pipe1;
+            PC_branch_ex_pipe1 = (Src_A_pipe1 + imm_ex_pipe1) & 32'hfffffffe;
         end
     end
 
@@ -941,6 +1214,13 @@ module core #(
         if (RESET) begin
             PC_value = PC_INIT;
         end
+        else if (csr_trap_fire) begin
+            PC_value = csr_trap_vector;
+        end
+        else if (mret_fire) begin PC_value = machine_return_pc; end
+        else if (fencei_fire) begin
+            PC_value = (valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f) ? pcplus4_mem_pipe0 : pcplus4_mem_pipe1;
+        end
         else if(branch_pred_correct_mem) begin
             if(branch_pred_if && is_branch_if) begin
                 PC_value = branch_pred_target_if; // predicted target
@@ -1006,6 +1286,38 @@ module core #(
                     .RD1_pipe1(RD1_id_pipe1),
                     .RD2_pipe1(RD2_id_pipe1)
                 );
+
+    csr csr_inst(
+        .forward_valid(csr_forward_valid),
+        .forward_addr(csr_forward_addr),
+        .forward_data(csr_forward_data),
+        .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
+        .time_value(time_value), .retire_count(retire_count),
+        .interrupt_pending(irq_pending), .interrupt_cause(irq_cause),
+        .mret_valid(mret_fire), .return_pc(machine_return_pc),
+        .trap_cause(trap_cause), .trap_value(trap_value),
+        .trap_valid(csr_trap_fire),
+        .trap_pc(csr_trap_pc),
+        .trap_vector(csr_trap_vector),
+        .clk(CLK),
+        .rst(RESET),
+        .csr_raddr_pipe0(csr_addr_id_pipe0),
+        .csr_waddr_pipe0(csr_waddr_mem_pipe0),
+        .csr_wdata_pipe0(csr_wdata_mem_pipe0),
+        .csr_raddr_pipe1(csr_addr_id_pipe1),
+        .csr_waddr_pipe1(csr_waddr_mem_pipe1),
+        .csr_wdata_pipe1(csr_wdata_mem_pipe1),
+        .csr_rvalid_pipe0(csr_rvalid_id_pipe0),
+        .csr_rvalid_pipe1(csr_rvalid_id_pipe1),
+        .csr_wvalid_pipe0(csr_wfire_mem_pipe0),
+        .csr_wvalid_pipe1(csr_wfire_mem_pipe1),
+        .csr_rdata_pipe0(csr_rdata_id_pipe0),
+        .csr_rdata_pipe1(csr_rdata_id_pipe1),
+        .csr_rillegal_pipe0(csr_rillegal_bank_id_pipe0),
+        .csr_rillegal_pipe1(csr_rillegal_bank_id_pipe1),
+        .csr_willegal_pipe0(csr_willegal_mem_pipe0),
+        .csr_willegal_pipe1(csr_willegal_mem_pipe1)
+    );
                 
      // Instantiate Extend Module
     imm_extend imm_extend0(
@@ -1022,7 +1334,14 @@ module core #(
                 
     // Instantiate Decoder
     decode_unit decode_unit0(
+                    .Instruction(Instr_id_pipe0),
+                    .illegal_instruction(illegal_id_pipe0),
                     .Opcode(opcode_id_pipe0),
+                    .Rs1(rs1_id_pipe0),
+                    .uses_rs1(uses_rs1_id_pipe0),
+                    .uses_rs2(uses_rs2_id_pipe0),
+                    .csr_rvalid(csr_rvalid_id_pipe0),
+                    .csr_wvalid(csr_wvalid_id_pipe0),
                     .Funct3(funct3_id_pipe0),
                     .Funct7(funct7_id_pipe0),
                     .RegWrite(RegWrite_id_pipe0),
@@ -1039,7 +1358,14 @@ module core #(
                 );
     
     decode_unit decode_unit1(
+                    .Instruction(Instr_id_pipe1),
+                    .illegal_instruction(illegal_id_pipe1),
                     .Opcode(opcode_id_pipe1),
+                    .Rs1(rs1_id_pipe1),
+                    .uses_rs1(uses_rs1_id_pipe1),
+                    .uses_rs2(uses_rs2_id_pipe1),
+                    .csr_rvalid(csr_rvalid_id_pipe1),
+                    .csr_wvalid(csr_wvalid_id_pipe1),
                     .Funct3(funct3_id_pipe1),
                     .Funct7(funct7_id_pipe1),
                     .RegWrite(RegWrite_id_pipe1),
@@ -1121,6 +1447,8 @@ module core #(
    // From IF stage
    .pc_if(pc_if_pipe0),
    .pcplus4_if(pcplus4_if_pipe0),
+   .valid_if(1'b1),
+   .valid_id(valid_id_pipe0),
    .instr_if(Instr_if_pipe0), 
    .branch_pred_if(branch_pred_if_pipe0),
    .branch_pred_target_if(branch_pred_target_if_pipe0),
@@ -1154,6 +1482,8 @@ module core #(
    // From IF stage
    .pc_if(pc_if_pipe1),
    .pcplus4_if(pcplus4_if_pipe1),
+   .valid_if(1'b1),
+   .valid_id(valid_id_pipe1),
    .instr_if(Instr_if_pipe1), 
 
    .is_jal_if(is_jal_if_pipe1),
@@ -1188,6 +1518,12 @@ module core #(
    // From ID stage (data)
    .pc_id(pc_id_pipe0),
    .pcplus4_id(pcplus4_id_pipe0),
+   .valid_id(valid_id_pipe0),
+   .valid_ex(valid_ex_pipe0),
+   .instruction_id(Instr_id_pipe0),
+   .instruction_ex(instruction_ex_pipe0),
+   .illegal_id(illegal_id_pipe0),
+   .illegal_ex(illegal_ex_pipe0),
    .rs1_val_id(rs1_val_id_pipe0),
    .rs2_val_id(rs2_val_id_pipe0),
    .imm_id(ExtImm_id_pipe0),
@@ -1200,6 +1536,12 @@ module core #(
    .branch_pred_id(branch_pred_id_pipe0),
    .branch_pred_target_id(branch_pred_target_id_pipe0),
    .is_ebreak_id(is_ebreak_id_pipe0),
+
+   .csr_rvalid_id(csr_rvalid_id_pipe0),
+   .csr_rdata_id(csr_rdata_id_pipe0),
+   .csr_addr_id(csr_addr_id_pipe0),
+   .csr_wvalid_id(csr_wvalid_id_pipe0),
+   .csr_rillegal_id(csr_rillegal_id_pipe0),
 
    // From ID stage (control)
    .RegWrite_id(RegWrite_id_pipe0),
@@ -1231,6 +1573,13 @@ module core #(
    .is_cond_jump_ex(is_cond_jump_ex_pipe0),
    .is_jal_ex(is_jal_ex_pipe0),
    .is_jalr_ex(is_jalr_ex_pipe0),
+
+   .csr_rvalid_ex(csr_rvalid_ex_pipe0),
+   .csr_rdata_ex(csr_rdata_ex_pipe0),
+   .csr_addr_ex(csr_addr_ex_pipe0),
+   .csr_wvalid_ex(csr_wvalid_ex_pipe0),
+   .csr_rillegal_ex(csr_rillegal_ex_pipe0),
+
    .RegWrite_ex(RegWrite_ex_pipe0),
    .MemWrite_ex(MemWrite_ex_pipe0),
    .MemRead_ex(MemRead_ex_pipe0),
@@ -1255,6 +1604,12 @@ module core #(
    // From ID stage (data)
    .pc_id(pc_id_pipe1),
    .pcplus4_id(pcplus4_id_pipe1),
+   .valid_id(valid_id_pipe1),
+   .valid_ex(valid_ex_pipe1),
+   .instruction_id(Instr_id_pipe1),
+   .instruction_ex(instruction_ex_pipe1),
+   .illegal_id(illegal_id_pipe1),
+   .illegal_ex(illegal_ex_pipe1),
    .rs1_val_id(rs1_val_id_pipe1),
    .rs2_val_id(rs2_val_id_pipe1),
    .imm_id(ExtImm_id_pipe1),
@@ -1267,6 +1622,12 @@ module core #(
    .branch_pred_id(branch_pred_id_pipe1),
    .branch_pred_target_id(branch_pred_target_id_pipe1),
    .is_ebreak_id(is_ebreak_id_pipe1),
+
+   .csr_rvalid_id(csr_rvalid_id_pipe1),
+   .csr_rdata_id(csr_rdata_id_pipe1),
+   .csr_addr_id(csr_addr_id_pipe1),
+   .csr_wvalid_id(csr_wvalid_id_pipe1),
+   .csr_rillegal_id(csr_rillegal_id_pipe1),
 
    // From ID stage (control)
    .RegWrite_id(RegWrite_id_pipe1),
@@ -1297,6 +1658,13 @@ module core #(
    .is_cond_jump_ex(is_cond_jump_ex_pipe1),
    .is_jal_ex(is_jal_ex_pipe1),
    .is_jalr_ex(is_jalr_ex_pipe1),
+
+   .csr_rvalid_ex(csr_rvalid_ex_pipe1),
+   .csr_rdata_ex(csr_rdata_ex_pipe1),
+   .csr_addr_ex(csr_addr_ex_pipe1),
+   .csr_wvalid_ex(csr_wvalid_ex_pipe1),
+   .csr_rillegal_ex(csr_rillegal_ex_pipe1),
+
    .RegWrite_ex(RegWrite_ex_pipe1),
    .MemWrite_ex(MemWrite_ex_pipe1),
    .MemRead_ex(MemRead_ex_pipe1),
@@ -1323,6 +1691,24 @@ module core #(
    .pc_ex(pc_ex_pipe0),
    .pcplus4_ex(pcplus4_ex_pipe0),
    .alu_out_ex(alu_out_ex_pipe0),
+   .csr_rvalid_ex(csr_rvalid_ex_pipe0),
+   .csr_rdata_ex(csr_rdata_ex_pipe0),
+   .csr_addr_ex(csr_addr_ex_pipe0),
+   .csr_wdata_ex(csr_wdata_ex_pipe0),
+   .csr_wvalid_ex(csr_wvalid_ex_pipe0),
+   .csr_rillegal_ex(csr_rillegal_ex_pipe0),
+   .csr_rvalid_mem(csr_rvalid_mem_pipe0),
+   .csr_rdata_mem(csr_rdata_mem_pipe0),
+   .csr_addr_mem(csr_waddr_mem_pipe0),
+   .csr_wdata_mem(csr_wdata_mem_pipe0),
+   .csr_wvalid_mem(csr_wvalid_mem_pipe0),
+   .csr_rillegal_mem(csr_rillegal_mem_pipe0),
+   .valid_ex(valid_ex_pipe0),
+   .valid_mem(valid_mem_pipe0),
+   .instruction_ex(instruction_ex_pipe0),
+   .instruction_mem(instruction_mem_pipe0),
+   .illegal_ex(illegal_ex_pipe0),
+   .illegal_mem(illegal_mem_pipe0),
    .store_data_ex(store_data_ex_pipe0),
    .rd_idx_ex(rd_idx_ex_pipe0),
    .MCycle_ex(MCycle_ex_pipe0),
@@ -1381,6 +1767,24 @@ module core #(
    .pc_ex(pc_ex_pipe1),
    .pcplus4_ex(pcplus4_ex_pipe1),
    .alu_out_ex(alu_out_ex_pipe1),
+   .csr_rvalid_ex(csr_rvalid_ex_pipe1),
+   .csr_rdata_ex(csr_rdata_ex_pipe1),
+   .csr_addr_ex(csr_addr_ex_pipe1),
+   .csr_wdata_ex(csr_wdata_ex_pipe1),
+   .csr_wvalid_ex(csr_wvalid_ex_pipe1),
+   .csr_rillegal_ex(csr_rillegal_ex_pipe1),
+   .csr_rvalid_mem(csr_rvalid_mem_pipe1),
+   .csr_rdata_mem(csr_rdata_mem_pipe1),
+   .csr_addr_mem(csr_waddr_mem_pipe1),
+   .csr_wdata_mem(csr_wdata_mem_pipe1),
+   .csr_wvalid_mem(csr_wvalid_mem_pipe1),
+   .csr_rillegal_mem(csr_rillegal_mem_pipe1),
+   .valid_ex(valid_ex_pipe1),
+   .valid_mem(valid_mem_pipe1),
+   .instruction_ex(instruction_ex_pipe1),
+   .instruction_mem(instruction_mem_pipe1),
+   .illegal_ex(illegal_ex_pipe1),
+   .illegal_mem(illegal_mem_pipe1),
    .store_data_ex(store_data_ex_pipe1),
    .rd_idx_ex(rd_idx_ex_pipe1),
    .MCycle_ex(MCycle_ex_pipe1),
@@ -1436,6 +1840,18 @@ module core #(
    .flush(MEM_WB_flush_pipe0),           // 1=bubble (zero control)
    // From MEM stage
    .pcplus4_mem(pcplus4_mem_pipe0),
+   .csr_rvalid_mem(csr_rvalid_mem_pipe0),
+   .csr_rdata_mem(csr_rdata_mem_pipe0),
+   .csr_rvalid_wb(csr_rvalid_wb_pipe0),
+   .csr_rdata_wb(csr_rdata_wb_pipe0),
+   .valid_mem(valid_mem_pipe0),
+   .valid_wb(valid_wb_pipe0),
+   .instruction_mem(instruction_mem_pipe0),
+   .instruction_wb(instruction_wb_pipe0),
+   .illegal_mem(illegal_mem_pipe0),
+   .illegal_wb(illegal_wb_pipe0),
+   .csr_wvalid_mem(csr_wvalid_mem_pipe0),
+   .csr_wvalid_wb(csr_wvalid_wb_pipe0),
    .mem_rdata_mem(mem_rdata_mem_pipe0),
    .alu_out_mem(alu_out_mem_pipe0),
    .MCycle_mem(MCycle_mem_pipe0),
@@ -1443,7 +1859,7 @@ module core #(
    .rd_idx_mem(rd_idx_mem_pipe0),
    .funct3_mem(funct3_mem_pipe0),
    .opcode_mem(opcode_mem_pipe0),
-   .RegWrite_mem(RegWrite_mem_pipe0),
+   .RegWrite_mem(RegWrite_mem_pipe0 && !csr_error_mem_pipe0),
    .MemToReg_mem(MemToReg_mem_pipe0),
    .is_ebreak_mem(is_ebreak_mem_pipe0),
    // To WB stage
@@ -1468,6 +1884,18 @@ module core #(
    .flush(MEM_WB_flush_pipe1),           // 1=bubble (zero control)
    // From MEM stage
    .pcplus4_mem(pcplus4_mem_pipe1),
+   .csr_rvalid_mem(csr_rvalid_mem_pipe1),
+   .csr_rdata_mem(csr_rdata_mem_pipe1),
+   .csr_rvalid_wb(csr_rvalid_wb_pipe1),
+   .csr_rdata_wb(csr_rdata_wb_pipe1),
+   .valid_mem(valid_mem_pipe1),
+   .valid_wb(valid_wb_pipe1),
+   .instruction_mem(instruction_mem_pipe1),
+   .instruction_wb(instruction_wb_pipe1),
+   .illegal_mem(illegal_mem_pipe1),
+   .illegal_wb(illegal_wb_pipe1),
+   .csr_wvalid_mem(csr_wvalid_mem_pipe1),
+   .csr_wvalid_wb(csr_wvalid_wb_pipe1),
    .mem_rdata_mem(mem_rdata_mem_pipe1),
    .alu_out_mem(alu_out_mem_pipe1),
    .MCycle_mem(MCycle_mem_pipe1),
@@ -1475,7 +1903,7 @@ module core #(
    .rd_idx_mem(rd_idx_mem_pipe1),
    .funct3_mem(funct3_mem_pipe1),
    .opcode_mem(opcode_mem_pipe1),
-   .RegWrite_mem(RegWrite_mem_pipe1),
+   .RegWrite_mem(RegWrite_mem_pipe1 && !csr_error_mem_pipe1),
    .MemToReg_mem(MemToReg_mem_pipe1),
    .is_ebreak_mem(is_ebreak_mem_pipe1),
    // To WB stage
@@ -1494,6 +1922,15 @@ module core #(
 
 
    hazard_ctrl hazard_ctrl_inst(
+    .csr_wait(csr_wait),
+    .csr_split(csr_split),
+    .csr_trap(csr_trap_fire),
+    .csr_trap_pipe0(csr_trap_pipe0 || irq_fire),
+    .system_redirect(mret_fire || fencei_fire),
+    .id_uses_rs1_pipe0(uses_rs1_id_pipe0),
+    .id_uses_rs2_pipe0(uses_rs2_id_pipe0),
+    .id_uses_rs1_pipe1(uses_rs1_id_pipe1),
+    .id_uses_rs2_pipe1(uses_rs2_id_pipe1),
     .if_is_branch_pipe0(is_branch_if_pipe0),
     .if_is_branch_pipe1(is_branch_if_pipe1),
 
@@ -1502,7 +1939,7 @@ module core #(
     .id_rd_pipe0(rd_id_pipe0),
     .id_is_R_type_pipe0(is_R_type_id_pipe0),
     .id_is_cond_branch_pipe0(is_cond_jump_id_pipe0),
-    .id_is_load_pipe0(MemToReg_id_pipe0),
+    .id_is_load_pipe0(MemtoReg_id_pipe0),
     .id_is_store_pipe0(id_is_store_pipe0),
     .id_regWrite_pipe0(RegWrite_id_pipe0),
     .id_is_MCycle_pipe0(MCycle_id_pipe0),
@@ -1512,7 +1949,7 @@ module core #(
     .id_rd_pipe1(rd_id_pipe1),
     .id_is_R_type_pipe1(is_R_type_id_pipe1),
     .id_is_cond_branch_pipe1(is_cond_jump_id_pipe1),
-    .id_is_load_pipe1(MemToReg_id_pipe1),
+    .id_is_load_pipe1(MemtoReg_id_pipe1),
     .id_is_store_pipe1(id_is_store_pipe1),
     .id_regWrite_pipe1(RegWrite_id_pipe1),
     .id_is_MCycle_pipe1(MCycle_id_pipe1),
@@ -1579,12 +2016,12 @@ module core #(
 
     .is_load_mem_pipe0(MemToReg_mem_pipe0),
     .mem_rd_pipe0(rd_idx_mem_pipe0),
-    .mem_RegWrite_pipe0(RegWrite_mem_pipe0),
+    .mem_RegWrite_pipe0(RegWrite_mem_pipe0 && !csr_error_mem_pipe0 && !MEM_WB_flush_pipe0),
     .mem_MCycle_pipe0(MCycle_mem_pipe0),
 
     .is_load_mem_pipe1(MemToReg_mem_pipe1),
     .mem_rd_pipe1(rd_idx_mem_pipe1),
-    .mem_RegWrite_pipe1(RegWrite_mem_pipe1),
+    .mem_RegWrite_pipe1(RegWrite_mem_pipe1 && !csr_error_mem_pipe1 && !MEM_WB_flush_pipe1),
     .mem_MCycle_pipe1(MCycle_mem_pipe1),
 
     .is_load_wb_pipe0(MemToReg_wb_pipe0),

@@ -40,6 +40,7 @@ module alu(
 				Src_B_comp = {1'b0, ~ Src_B};
 				ALUResult = S_wider[31:0];
 			end
+	        4'b1111: ALUResult = Src_B & ~Src_A; // CSR clear
 	        4'b1110: ALUResult = Src_A & Src_B;	// and
 	        4'b1100: ALUResult = Src_A | Src_B; 	// or
 	        4'b1101: ALUResult = Src_A ^ Src_B; 	// xor

@@ -6,6 +6,13 @@ module id_ex_reg
   input  wire        en,              // 0=hold (stall into EX)
   input  wire        flush,           // 1=bubble (zero control signals)
 
+  input wire  valid_id,
+  output reg  valid_ex,
+  input wire [31:0] instruction_id,
+  output reg [31:0] instruction_ex,
+  input wire  illegal_id,
+  output reg  illegal_ex,
+
   // From ID stage (data)
   input  wire [31:0] pc_id,
   input  wire [31:0] pcplus4_id,
@@ -25,6 +32,12 @@ module id_ex_reg
 
   input wire branch_pred_id,
   input wire [31:0] branch_pred_target_id,
+
+  input wire csr_rvalid_id,
+  input  wire [31:0] csr_rdata_id,
+  input  wire [11:0] csr_addr_id,
+  input  wire        csr_wvalid_id,
+  input  wire        csr_rillegal_id,
 
   // From ID stage (control)
   input  wire        RegWrite_id,
@@ -58,6 +71,12 @@ module id_ex_reg
   output reg branch_pred_ex,
   output reg [31:0] branch_pred_target_ex,
 
+  output reg csr_rvalid_ex,
+  output reg  [31:0] csr_rdata_ex,
+  output reg  [11:0] csr_addr_ex,
+  output reg         csr_wvalid_ex,
+  output reg         csr_rillegal_ex,
+
   output reg         RegWrite_ex,
   output reg  [2:0]  MemWrite_ex,
   output reg         MemRead_ex,
@@ -73,6 +92,9 @@ module id_ex_reg
   // When flush=1, we insert a bubble by zeroing all registers
   always @(posedge clk) begin
     if (rst) begin
+      illegal_ex <= 'b0;
+      instruction_ex <= 'b0;
+      valid_ex <= 'b0;
       pc_ex        <= 32'b0;
       pcplus4_ex   <= 32'b0;
       rs1_val_ex   <= 32'b0;
@@ -92,18 +114,27 @@ module id_ex_reg
       branch_pred_target_ex <= 32'b0;
       is_ebreak_ex <= 1'b0;
 
+      csr_rvalid_ex <= 1'b0;
+
+      csr_rdata_ex <= 32'b0;
+      csr_addr_ex <= 12'b0;
+      csr_wvalid_ex <= 1'b0;
+      csr_rillegal_ex <= 1'b0;
 
       RegWrite_ex  <= 1'b0;
-      MemWrite_ex  <= 4'b0000;
+      MemWrite_ex  <= 3'b0;
       MemRead_ex   <= 1'b0;
       MemToReg_ex  <= 1'b0;
-      AluSrcA_ex   <= 3'b0;
-      AluSrcB_ex   <= 3'b0;
-      AluOp_ex     <= 3'b0;
+      AluSrcA_ex   <= 2'b0;
+      AluSrcB_ex   <= 2'b0;
+      AluOp_ex     <= 4'b0;
       MCycle_ex    <= 1'b0;
       MCycleOp_ex  <= 2'b0;
       LwSizeSel_ex <= 5'b0;
     end else if (flush) begin
+      illegal_ex <= 'b0;
+      instruction_ex <= 'b0;
+      valid_ex <= 'b0;
       pc_ex        <= 32'b0;
       pcplus4_ex   <= 32'b0;
       rs1_val_ex   <= 32'b0;
@@ -123,18 +154,28 @@ module id_ex_reg
       branch_pred_ex <= 1'b0;
       branch_pred_target_ex <= 32'b0;
 
+      csr_rvalid_ex <= 1'b0;
+
+      csr_rdata_ex <= 32'b0;
+      csr_addr_ex <= 12'b0;
+      csr_wvalid_ex <= 1'b0;
+      csr_rillegal_ex <= 1'b0;
+
       RegWrite_ex  <= 1'b0;
-      MemWrite_ex  <= 4'b0000;
+      MemWrite_ex  <= 3'b0;
       MemRead_ex   <= 1'b0;
       MemToReg_ex  <= 1'b0;
-      AluSrcA_ex   <= 3'b0;
-      AluSrcB_ex   <= 3'b0;
-      AluOp_ex     <= 3'b0;
+      AluSrcA_ex   <= 2'b0;
+      AluSrcB_ex   <= 2'b0;
+      AluOp_ex     <= 4'b0;
       MCycle_ex    <= 1'b0;
       MCycleOp_ex  <= 2'b0;
       LwSizeSel_ex <= 5'b0;
 
     end else if (en) begin
+      illegal_ex <= illegal_id;
+      instruction_ex <= instruction_id;
+      valid_ex <= valid_id;
       pc_ex        <= pc_id;
       pcplus4_ex   <= pcplus4_id;
       rs1_val_ex   <= rs1_val_id;
@@ -155,6 +196,13 @@ module id_ex_reg
 
       branch_pred_ex <= branch_pred_id;
       branch_pred_target_ex <= branch_pred_target_id;
+
+      csr_rvalid_ex <= csr_rvalid_id;
+
+      csr_rdata_ex <= csr_rdata_id;
+      csr_addr_ex <= csr_addr_id;
+      csr_wvalid_ex <= csr_wvalid_id;
+      csr_rillegal_ex <= csr_rillegal_id;
 
       RegWrite_ex  <= RegWrite_id;
       MemWrite_ex  <= MemWrite_id;

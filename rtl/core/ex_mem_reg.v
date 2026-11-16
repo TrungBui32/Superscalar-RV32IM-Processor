@@ -5,6 +5,13 @@ module ex_mem_reg(
   input  wire        en,              // 0=hold
   input  wire        flush,           // 1=bubble (zero control)
 
+  input wire  valid_ex,
+  output reg  valid_mem,
+  input wire [31:0] instruction_ex,
+  output reg [31:0] instruction_mem,
+  input wire  illegal_ex,
+  output reg  illegal_mem,
+
   // From EX stage
   input  wire [31:0] pc_ex,
   input  wire [31:0] pcplus4_ex,
@@ -32,7 +39,20 @@ module ex_mem_reg(
   input [31:0] branch_pred_target_ex,
   input is_ebreak_ex,
 
+  input wire csr_rvalid_ex,
+  input wire [31:0] csr_rdata_ex,
+  input wire [11:0] csr_addr_ex,
+  input wire [31:0] csr_wdata_ex,
+  input wire csr_wvalid_ex,
+  input wire csr_rillegal_ex,
+
   // To MEM stage
+  output reg csr_rvalid_mem,
+  output reg [31:0] csr_rdata_mem,
+  output reg [11:0] csr_addr_mem,
+  output reg [31:0] csr_wdata_mem,
+  output reg csr_wvalid_mem,
+  output reg csr_rillegal_mem,
   output reg  [31:0] pc_mem,
   output reg  [31:0] pcplus4_mem,
   output reg  [31:0] alu_out_mem,
@@ -61,6 +81,9 @@ module ex_mem_reg(
 );
   always @(posedge clk) begin
     if (rst) begin
+      illegal_mem <= 'b0;
+      instruction_mem <= 'b0;
+      valid_mem <= 'b0;
       pc_mem             <= 32'b0;
       pcplus4_mem        <= 32'b0;
       alu_out_mem        <= 32'b0;
@@ -77,7 +100,7 @@ module ex_mem_reg(
       PC_branch_mem      <= 32'b0;
 
       RegWrite_mem       <= 1'b0;
-      MemWrite_mem       <= 4'b0000;
+      MemWrite_mem       <= 3'b0;
       MemRead_mem        <= 1'b0;
       MemToReg_mem       <= 1'b0;
       LwSizeSel_mem      <= 5'b0;
@@ -85,7 +108,17 @@ module ex_mem_reg(
       branch_pred_mem    <= 1'b0;
       branch_pred_target_mem <= 32'b0;
       is_ebreak_mem      <= 1'b0;
+      csr_rvalid_mem <= 1'b0;
+      csr_rdata_mem <= 'b0;
+      csr_addr_mem <= 'b0;
+      csr_wdata_mem <= 'b0;
+      csr_wvalid_mem <= 'b0;
+      csr_rillegal_mem <= 'b0;
+
     end else if (flush) begin
+      illegal_mem <= 'b0;
+      instruction_mem <= 'b0;
+      valid_mem <= 'b0;
       pc_mem             <= 32'b0;
       pcplus4_mem        <= 32'b0;
       alu_out_mem        <= 32'b0;
@@ -102,7 +135,7 @@ module ex_mem_reg(
       PC_branch_mem      <= 32'b0;
 
       RegWrite_mem       <= 1'b0;
-      MemWrite_mem       <= 4'b0000;
+      MemWrite_mem       <= 3'b0;
       MemRead_mem        <= 1'b0;
       MemToReg_mem       <= 1'b0;
       LwSizeSel_mem      <= 5'b0;
@@ -110,7 +143,17 @@ module ex_mem_reg(
       branch_pred_mem    <= 1'b0;
       branch_pred_target_mem <= 32'b0;
       is_ebreak_mem      <= 1'b0;
+      csr_rvalid_mem <= 1'b0;
+      csr_rdata_mem <= 'b0;
+      csr_addr_mem <= 'b0;
+      csr_wdata_mem <= 'b0;
+      csr_wvalid_mem <= 'b0;
+      csr_rillegal_mem <= 'b0;
+
     end else if (en) begin
+      illegal_mem <= illegal_ex;
+      instruction_mem <= instruction_ex;
+      valid_mem <= valid_ex;
       pc_mem             <= pc_ex;
       pcplus4_mem        <= pcplus4_ex;
       alu_out_mem        <= alu_out_ex;
@@ -135,6 +178,13 @@ module ex_mem_reg(
       branch_pred_mem    <= branch_pred_ex;
       branch_pred_target_mem <= branch_pred_target_ex;
       is_ebreak_mem      <= is_ebreak_ex;
+      csr_rvalid_mem <= csr_rvalid_ex;
+      csr_rdata_mem <= csr_rdata_ex;
+      csr_addr_mem <= csr_addr_ex;
+      csr_wdata_mem <= csr_wdata_ex;
+      csr_wvalid_mem <= csr_wvalid_ex;
+      csr_rillegal_mem <= csr_rillegal_ex;
+
     end
   end
 endmodule

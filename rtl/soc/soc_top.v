@@ -151,6 +151,20 @@ wire locked;
 wire clk1 = clk_out1;
 wire clk2 = clk_out2;
 
+// Machine timer MMIO uses the same byte-lane formatting as DMEM stores.
+wire [31:0] timer_rdata_pipe0, timer_rdata_pipe1;
+wire timer_hit_pipe0, timer_hit_pipe1, timer_irq, timer_software_irq;
+wire [63:0] machine_time;
+machine_timer machine_timer_inst(
+    .clk(clk1), .rst(RESET),
+    .addr_pipe0(ALUResult_pipe0), .addr_pipe1(ALUResult_pipe1),
+    .wdata_pipe0(dmem_dina), .wdata_pipe1(dmem_dinb),
+    .wstrb_pipe0(dmem_wea), .wstrb_pipe1(dmem_web),
+    .rdata_pipe0(timer_rdata_pipe0), .rdata_pipe1(timer_rdata_pipe1),
+    .hit_pipe0(timer_hit_pipe0), .hit_pipe1(timer_hit_pipe1),
+    .irq_timer(timer_irq), .irq_software(timer_software_irq), .time_value(machine_time)
+);
+
 // Connect DMEM signals
 
 reg [DATA_WIDTH-1:0] sel_bytes_pipe0;
@@ -285,7 +299,9 @@ assign dmem_dinb = dmem_dinb_reg;
 assign dmem_web = dmem_web_reg;
   
 always @(*) begin
-	if (cycle_count_read_pipe1)
+	if (timer_hit_pipe1)
+        ReadData_in_pipe1 = timer_rdata_pipe1 >> (ALUResult_pipe1[1:0]*8);
+    else if (cycle_count_read_pipe1)
 		ReadData_in_pipe1 = cycle_count;
 	else if( uart_tx_ready_read_pipe1)
 		ReadData_in_pipe1 = {31'd0, UART_TX_ready};
@@ -300,7 +316,9 @@ assign dmem_ena = ((ALUResult_pipe0[DATA_WIDTH-1:16] == DMEM_BASE[DATA_WIDTH-1:1
 assign dmem_dina = dmem_dina_reg;
 
 always @(*) begin
-	if (cycle_count_read_pipe0)
+	if (timer_hit_pipe0)
+        ReadData_in_pipe0 = timer_rdata_pipe0 >> (ALUResult_pipe0[1:0]*8);
+    else if (cycle_count_read_pipe0)
 		ReadData_in_pipe0 = cycle_count;
 	else if(uart_tx_ready_read_pipe0)
 		ReadData_in_pipe0 = {31'd0, UART_TX_ready};
@@ -702,6 +720,8 @@ end
 //// RV port map
 ////----------------------------------------------------------------
 core #(.PC_INIT(PC_INIT)) core_inst(
+    .irq_software(timer_software_irq), .irq_timer(timer_irq), .irq_external(1'b0),
+    .time_value(machine_time),
 	.CLK(clk1),			// use 100MHz
 	.RESET(RESET),
 	.Instr_pipe0(Instr_pipe0),

@@ -1,4 +1,13 @@
 module hazard_ctrl (
+  input wire csr_wait,
+  input wire csr_split,
+  input wire csr_trap,
+  input wire system_redirect,
+  input wire csr_trap_pipe0,
+  input wire id_uses_rs1_pipe0,
+  input wire id_uses_rs2_pipe0,
+  input wire id_uses_rs1_pipe1,
+  input wire id_uses_rs2_pipe1,
 
   input  wire       if_is_branch_pipe0,
   input  wire       if_is_branch_pipe1,
@@ -81,7 +90,9 @@ module hazard_ctrl (
   
   // Check if the destination register of the older instruction in ID stage (pipe0) matches either source register of the newer instruction in ID stage (pipe1)
   wire same_reg_read_write_id;
-  assign same_reg_read_write_id = (id_regWrite_pipe0 && id_rd_pipe0 != 5'd0 && ((id_rd_pipe0 == id_rs1_pipe1) || ((id_is_R_type_pipe1 || id_is_cond_branch_pipe1 || id_is_store_pipe1) && (id_rd_pipe0 == id_rs2_pipe1)))) ? 1'b1: 1'b0;
+  assign same_reg_read_write_id = id_regWrite_pipe0 && (id_rd_pipe0 != 0) &&
+      ((id_uses_rs1_pipe1 && id_rd_pipe0 == id_rs1_pipe1) ||
+       (id_uses_rs2_pipe1 && id_rd_pipe0 == id_rs2_pipe1));
   
   // MCycle-use hazards from ID stage
   wire MCycle_use_id_pipe0;
@@ -93,12 +104,20 @@ module hazard_ctrl (
 
 // Load-use hazards from EX stage
   wire load_use_ex_stage_pipe0;
-  assign load_use_ex_stage_pipe0 = ((ex_is_load_pipe0 && ex_rd_id_pipe0 != 4'd0 && (ex_rd_id_pipe0 == id_rs1_pipe0 || ((id_is_R_type_pipe0 || id_is_cond_branch_pipe0 || id_is_store_pipe0) && ex_rd_id_pipe0 == id_rs2_pipe0))) 
-    || (ex_is_load_pipe1 && ex_rd_id_pipe1 != 4'd0 && (ex_rd_id_pipe1 == id_rs1_pipe0 || ((id_is_R_type_pipe0 || id_is_cond_branch_pipe0 || id_is_store_pipe0) && ex_rd_id_pipe1 == id_rs2_pipe0)))) ? 1'b1 : 1'b0;
+  assign load_use_ex_stage_pipe0 = (ex_is_load_pipe0 && ex_rd_id_pipe0 != 0 &&
+       ((id_uses_rs1_pipe0 && ex_rd_id_pipe0 == id_rs1_pipe0) ||
+        (id_uses_rs2_pipe0 && ex_rd_id_pipe0 == id_rs2_pipe0))) ||
+      (ex_is_load_pipe1 && ex_rd_id_pipe1 != 0 &&
+       ((id_uses_rs1_pipe0 && ex_rd_id_pipe1 == id_rs1_pipe0) ||
+        (id_uses_rs2_pipe0 && ex_rd_id_pipe1 == id_rs2_pipe0)));
 
   wire load_use_ex_stage_pipe1;
-  assign load_use_ex_stage_pipe1 = ((ex_is_load_pipe0 && ex_rd_id_pipe0 != 4'd0 && (ex_rd_id_pipe0 == id_rs1_pipe1 || ((id_is_R_type_pipe1 || id_is_cond_branch_pipe1 || id_is_store_pipe1) && ex_rd_id_pipe0 == id_rs2_pipe1)))
-    || (ex_is_load_pipe1 && ex_rd_id_pipe1 != 4'd0 && (ex_rd_id_pipe1 == id_rs1_pipe1 || ((id_is_R_type_pipe1 || id_is_cond_branch_pipe1 || id_is_store_pipe1) && ex_rd_id_pipe1 == id_rs2_pipe1)))) ? 1'b1 : 1'b0;
+  assign load_use_ex_stage_pipe1 = (ex_is_load_pipe0 && ex_rd_id_pipe0 != 0 &&
+       ((id_uses_rs1_pipe1 && ex_rd_id_pipe0 == id_rs1_pipe1) ||
+        (id_uses_rs2_pipe1 && ex_rd_id_pipe0 == id_rs2_pipe1))) ||
+      (ex_is_load_pipe1 && ex_rd_id_pipe1 != 0 &&
+       ((id_uses_rs1_pipe1 && ex_rd_id_pipe1 == id_rs1_pipe1) ||
+        (id_uses_rs2_pipe1 && ex_rd_id_pipe1 == id_rs2_pipe1)));
 
 // 2) Memory access address conflicts
   wire same_addr_mem_ex;
@@ -186,7 +205,19 @@ always @(*) begin
         MEM_WB_en_pipe1 = 1'b0;
     end
     
-    else if(mem_redirect) begin
+    // Synchronous CSR fault: older WB may retire, but the faulting MEM
+    // instruction and all younger instructions must have no side effects.
+    else if (csr_trap) begin
+        IF_ID_flush_pipe0 = 1'b1;
+        IF_ID_flush_pipe1 = 1'b1;
+        ID_EX_flush_pipe0 = 1'b1;
+        ID_EX_flush_pipe1 = 1'b1;
+        EX_MEM_flush_pipe0 = 1'b1;
+        EX_MEM_flush_pipe1 = 1'b1;
+        MEM_WB_flush_pipe0 = csr_trap_pipe0;
+        MEM_WB_flush_pipe1 = 1'b1;
+    end
+    else if(mem_redirect || system_redirect) begin
         pc_en             = 1'b1;
         IF_ID_flush_pipe0 = 1'b1;
         IF_ID_flush_pipe1 = 1'b1;
@@ -204,6 +235,15 @@ always @(*) begin
         ID_EX_flush_pipe0 = 1'b1;
         EX_MEM_flush_pipe1 = 1'b1;
     end
+    // The CSR dependency unit requests a barrier for control writes/faults.
+    // Data dependencies are handled by EX/MEM-to-ID CSR forwarding.
+    else if (csr_wait) begin
+        pc_en = 1'b0;
+        IF_ID_en_pipe0 = 1'b0;
+        IF_ID_en_pipe1 = 1'b0;
+        ID_EX_flush_pipe0 = 1'b1;
+        ID_EX_flush_pipe1 = 1'b1;
+    end
     else if(load_use_ex_stage_pipe0) begin
         pc_en             = 1'b0;
         IF_ID_en_pipe0    = 1'b0;
@@ -215,6 +255,13 @@ always @(*) begin
     else if(load_use_ex_stage_pipe1) begin
         pc_en             = 1'b0;
         IF_ID_en_pipe1    = 1'b0;
+        IF_ID_flush_pipe0 = 1'b1;
+        ID_EX_flush_pipe1 = 1'b1;
+    end
+    // A CSR split must never bypass a load-use stall for its pipe0 operand.
+    else if (csr_split) begin
+        pc_en = 1'b0;
+        IF_ID_en_pipe1 = 1'b0;
         IF_ID_flush_pipe0 = 1'b1;
         ID_EX_flush_pipe1 = 1'b1;
     end
