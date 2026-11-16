@@ -165,7 +165,10 @@ instructions and bubbles do not retire; explicit writes to `minstret` suppress
 that instruction's automatic increment. `time/timeh` read the SoC timer.
 
 Synchronous traps cover illegal encodings/CSR accesses, M-mode ECALL, EBREAK,
-and misaligned instruction targets/load/store addresses. Trap entry updates
+and misaligned instruction targets. Misaligned loads/stores can be split into
+byte transactions as described below; regions that disallow splitting raise
+load/store address-misaligned traps. PMP denials raise instruction/load/store
+access faults. Trap entry updates
 `mepc`, `mcause`, `mtval`, and MIE/MPIE; `MRET` restores interrupt state and
 resumes at `mepc`. `FENCE` serializes older operations; `FENCE.I` also flushes
 prefetched instructions. `WFI` currently executes as a legal no-op.
@@ -194,6 +197,45 @@ the legacy testbench-only EBREAK halt behavior; the default is an architectural
 breakpoint trap. The regression testbenches select debug halt explicitly where
 needed.
 
+### Memory protection and native breakpoints
+
+PMP provides 16 entries (`pmpcfg0`–`pmpcfg3`, `pmpaddr0`–`pmpaddr15`) with
+4-byte granularity and OFF, TOR, NA4, and NAPOT modes. The lowest matching entry
+must cover the whole access. Locked entries enforce R/W/X in M-mode; unlocked
+entries bypass permissions in M-mode. Configuration/address locks, including a
+locked TOR entry's preceding address register, remain set until reset. This does
+not add U/S modes or an MMU. The data bus carries 32-bit physical addresses.
+
+Two native address triggers provide exact-address execute/load/store breakpoints
+before the matching instruction takes effect. `tselect`, `tdata1`, `tdata2`,
+`tinfo`, and `tcontrol` are implemented. The supported configuration is mcontrol
+type 2, M-mode, address equality, before timing, and breakpoint exception action.
+Unsupported mcontrol fields read zero. `tcontrol.MTE/MPTE` disable triggers in a trap
+handler and restore them on MRET. External Debug Mode, JTAG debug, trigger
+chaining, and data-value matching are not implemented.
+
+### Misaligned data accesses
+
+`SUPPORT_MISALIGNED=1` enables halfword/word loads and stores at any byte offset,
+including accesses across word boundaries. The MEM stage splits these accesses
+into byte transfers, holds the pipeline through external stalls, and assembles
+load data before sign/zero extension. Split stores are not atomic. PMP and
+triggers check the original complete access before any byte transfer starts.
+Overlapping memory operations remain ordered across the two issue pipes.
+
+`MISALIGNED_BASE` and `MISALIGNED_MASK` select a RAM region with a prefix mask;
+both endpoints must be inside it. Their defaults are zero, allowing all
+byte-addressable memory on the standalone core. The board SoC restricts splitting
+to its DMEM region (`0x10010000`–`0x1001ffff`), so misaligned MMIO accesses trap.
+Set `SUPPORT_MISALIGNED=0` to trap all misaligned halfword/word accesses.
+
+The local ISA audit passed all 66 RV32 physical-environment tests in `rv32ui`,
+`rv32um`, and `rv32mi` from riscv-tests commit
+`3df703cd52d5f0d8224e3c50bf03c6cb70efff98`, using test-env commit
+`6de71edb142be36319e380ce782c3d1830c65d68`. The same tests also passed with
+three deterministic random memory-stall seeds. This uses a unified RAM model
+around the core; it is not a full-board FPGA or timing validation.
+
 Run the open-source functional regressions from any directory:
 
 ```bash
@@ -204,7 +246,7 @@ They require Icarus Verilog (`iverilog`, `vvp`) and cover decode, normalized
 forwarding, pipeline hazards, randomized architectural scoreboards, trap/MRET,
 interrupt masking/priority/vectoring/retriggering, counter behavior, and actual
 CPU + MMIO timer/software interrupt handlers. They do not certify ISA compliance
-or FPGA timing. U/S-mode, PMP/MMU, bus access-fault inputs, and a device interrupt
+or FPGA timing. U/S-mode, MMU, external bus access-fault inputs, and a device interrupt
 controller are not implemented. Vivado-generated BRAM/clock IP remains required
 for the complete board wrapper.
 
