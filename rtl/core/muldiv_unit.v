@@ -452,7 +452,10 @@ module muldiv_unit
                 end
             end
             else begin // division
-                if(quotient_sign)
+                // DIV/DIVU by zero return all ones, independent of dividend sign.
+                if(op2_reg == 0)
+                    Result1 <= {width{1'b1}};
+                else if(quotient_sign)
                     Result1 <= ~shifted_op_reg[width-1:0] + 1; // make quotient negative if needed
                 else
                     Result1 <= shifted_op_reg[width-1:0];
