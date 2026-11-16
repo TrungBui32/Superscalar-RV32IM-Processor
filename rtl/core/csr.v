@@ -16,6 +16,9 @@ module csr #(
     output [31:0] return_pc,
     output [127:0] pmp_config,
     output [511:0] pmp_address,
+    output [63:0] trigger_control,
+    output [63:0] trigger_address,
+    output trigger_enable,
     output interrupt_pending,
     output [31:0] interrupt_cause,
     // Oldest first: MEM0, MEM1, EX0, EX1. Inputs are final write intent.
@@ -96,6 +99,15 @@ module csr #(
         assign pmp_config[pmp_index*8 +:8] = pmpcfg[pmp_index];
         assign pmp_address[pmp_index*32 +:32] = pmpaddr[pmp_index];
     end endgenerate
+    // Two native address triggers: mcontrol type 2, equality, before timing,
+    // action=breakpoint, M mode only. No external Debug Mode is advertised.
+    reg tselect;
+    reg [31:0] tdata1 [0:1];
+    reg [31:0] tdata2 [0:1];
+    reg [7:0] tcontrol;
+    assign trigger_control={tdata1[1],tdata1[0]};
+    assign trigger_address={tdata2[1],tdata2[0]};
+    assign trigger_enable=tcontrol[3];
     reg [2:0] mcountinhibit;
     reg [63:0] mcycle, minstret;
     wire [31:0] misa = MISA_VALUE;
@@ -120,7 +132,9 @@ module csr #(
                 CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID, CSR_MCONFIGPTR:
                     csr_address_exists = 1'b1;
                 default: csr_address_exists = (addr >= 12'h3a0 && addr <= 12'h3a3) ||
-                    (addr >= 12'h3b0 && addr <= 12'h3bf);
+                    (addr >= 12'h3b0 && addr <= 12'h3bf) ||
+                    addr == 12'h7a0 || addr == 12'h7a1 || addr == 12'h7a2 ||
+                    addr == 12'h7a4 || addr == 12'h7a5;
             endcase
         end
     endfunction
@@ -169,6 +183,7 @@ module csr #(
                 if (valid[i] && csr_address_exists(addresses[12*i +:12]) &&
                     addresses[12*i +:12] != CSR_MIP &&
                     !(addresses[12*i +:12] >= 12'h3a0 && addresses[12*i +:12] <= 12'h3bf) &&
+                    addresses[12*i+4 +:8] != 8'h7a &&
                     addresses[12*i+10 +:2] != 2'b11 &&
                     backing_address(addr) == backing_address(addresses[12*i +:12]))
                     forward_value = normalize_write(addresses[12*i +:12],values[32*i +:32]);
@@ -182,6 +197,11 @@ module csr #(
         csr_rdata_pipe0 = 0;
         if (!rst && csr_rvalid_pipe0) begin
             case (csr_raddr_pipe0)
+                12'h7a0: csr_rdata_pipe0 = {31'b0,tselect};
+                12'h7a1: csr_rdata_pipe0 = tdata1[tselect];
+                12'h7a2: csr_rdata_pipe0 = tdata2[tselect];
+                12'h7a4: csr_rdata_pipe0 = 32'h4; // type 2 supported
+                12'h7a5: csr_rdata_pipe0 = {24'b0,tcontrol};
                 CSR_MSTATUS: csr_rdata_pipe0 = mstatus;
                 CSR_MISA: csr_rdata_pipe0 = misa;
                 CSR_MIE: csr_rdata_pipe0 = mie;
@@ -223,6 +243,11 @@ module csr #(
         csr_rdata_pipe1 = 0;
         if (!rst && csr_rvalid_pipe1) begin
             case (csr_raddr_pipe1)
+                12'h7a0: csr_rdata_pipe1 = {31'b0,tselect};
+                12'h7a1: csr_rdata_pipe1 = tdata1[tselect];
+                12'h7a2: csr_rdata_pipe1 = tdata2[tselect];
+                12'h7a4: csr_rdata_pipe1 = 32'h4; // type 2 supported
+                12'h7a5: csr_rdata_pipe1 = {24'b0,tcontrol};
                 CSR_MSTATUS: csr_rdata_pipe1 = mstatus;
                 CSR_MISA: csr_rdata_pipe1 = misa;
                 CSR_MIE: csr_rdata_pipe1 = mie;
@@ -294,6 +319,41 @@ module csr #(
                     CSR_MCAUSE: mcause <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
                     CSR_MTVAL: mtval <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
                     default: begin end // Fixed, hardware-owned or counter CSR.
+                endcase
+            end
+        end
+    end
+
+    function [31:0] trigger_normalize;
+        input [31:0] value;
+        begin trigger_normalize = value[31:28] == 4'h2 ?
+            32'h20000000 | (value & 32'h47) : 32'b0; end
+    endfunction
+    always @(posedge clk) begin
+        if (rst) begin
+            tselect<=0; tdata1[0]<=0; tdata1[1]<=0;
+            tdata2[0]<=0; tdata2[1]<=0; tcontrol<=0;
+        end else if (trap_valid) begin
+            tcontrol <= {tcontrol[3],7'b0}; // MPTE=MTE; MTE=0 prevents recursive traps.
+        end else if (mret_valid) begin
+            tcontrol <= 8'h80 | {4'b0,tcontrol[7],3'b0};
+        end else begin
+            if (write0) begin
+                case (csr_waddr_pipe0)
+                    12'h7a0: if (csr_wdata_pipe0<2) tselect<=csr_wdata_pipe0[0];
+                    12'h7a1: tdata1[tselect]<=trigger_normalize(csr_wdata_pipe0);
+                    12'h7a2: tdata2[tselect]<=csr_wdata_pipe0;
+                    12'h7a5: tcontrol<=csr_wdata_pipe0[7:0] & 8'h88;
+                    default: begin end
+                endcase
+            end
+            if (write1) begin
+                case (csr_waddr_pipe1)
+                    12'h7a0: if (csr_wdata_pipe1<2) tselect<=csr_wdata_pipe1[0];
+                    12'h7a1: tdata1[tselect]<=trigger_normalize(csr_wdata_pipe1);
+                    12'h7a2: tdata2[tselect]<=csr_wdata_pipe1;
+                    12'h7a5: tcontrol<=csr_wdata_pipe1[7:0] & 8'h88;
+                    default: begin end
                 endcase
             end
         end

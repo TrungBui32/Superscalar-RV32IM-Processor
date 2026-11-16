@@ -705,6 +705,30 @@ module core #(
     wire branch_pred_mem_pipe0;
     wire branch_pred_mem_pipe1;
 
+    wire [63:0] trigger_control, trigger_address;
+    wire trigger_enable;
+    function native_trigger_match;
+        input [31:0] address;
+        input [2:0] kind; // execute, store, load
+        input [63:0] controls, addresses;
+        integer ti;
+        reg [31:0] control_word;
+        begin
+            native_trigger_match=0; control_word=0;
+            for (ti=0;ti<2;ti=ti+1) begin
+                control_word=controls[ti*32 +:32];
+                if (control_word[31:28]==2 && control_word[6] &&
+                    |(control_word[2:0]&kind) && address==addresses[ti*32 +:32])
+                    native_trigger_match=1;
+            end
+        end
+    endfunction
+    wire trigger_exec0=trigger_enable && native_trigger_match(pc_mem_pipe0,3'b100,trigger_control,trigger_address);
+    wire trigger_data0=trigger_enable && native_trigger_match(alu_out_mem_pipe0,
+        {1'b0,(|MemWrite_mem_pipe0),MemRead_mem_pipe0},trigger_control,trigger_address);
+    wire trigger_exec1=trigger_enable && native_trigger_match(pc_mem_pipe1,3'b100,trigger_control,trigger_address);
+    wire trigger_data1=trigger_enable && native_trigger_match(alu_out_mem_pipe1,
+        {1'b0,(|MemWrite_mem_pipe1),MemRead_mem_pipe1},trigger_control,trigger_address);
     wire [127:0] pmp_config;
     wire [511:0] pmp_address;
     wire [1:0] pmp_fetch_allow, pmp_data_allow;
@@ -744,7 +768,7 @@ module core #(
                 12'h304, 12'h104, 12'h344, 12'h144,
                 12'h305, 12'h105, 12'h306, 12'h106:
                     csr_control_write = 1'b1;
-                default: csr_control_write = (addr >= 12'h3a0 && addr <= 12'h3bf);
+                default: csr_control_write = (addr >= 12'h3a0 && addr <= 12'h3bf) || addr[11:4]==8'h7a;
             endcase
         end
     endfunction
@@ -827,7 +851,9 @@ module core #(
         sync_fault0 = 1'b0;
         sync_cause0 = 32'd2;
         sync_value0 = instruction_mem_pipe0;
-        if (!pmp_fetch_allow[0]) begin
+        if (trigger_exec0) begin
+            sync_fault0=1'b1; sync_cause0=32'd3; sync_value0=pc_mem_pipe0;
+        end else if (!pmp_fetch_allow[0]) begin
             sync_fault0=1'b1; sync_cause0=32'd1; sync_value0=pc_mem_pipe0;
         end else if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0) sync_fault0 = 1'b1;
         else if (instruction_mem_pipe0 == 32'h00000073) begin
@@ -837,6 +863,8 @@ module core #(
         end else if ((is_jal_mem_pipe0 || is_jalr_mem_pipe0 ||
                      (is_cond_jump_mem_pipe0 && PCSrc_mem_pipe0[0])) && PC_branch_mem_pipe0[1:0] != 0) begin
             sync_fault0 = 1'b1; sync_cause0 = 0; sync_value0 = PC_branch_mem_pipe0;
+        end else if (trigger_data0) begin
+            sync_fault0=1'b1; sync_cause0=32'd3; sync_value0=alu_out_mem_pipe0;
         end else if ((MemRead_mem_pipe0 || |MemWrite_mem_pipe0) &&
                      ((funct3_mem_pipe0[1:0] == 2 && alu_out_mem_pipe0[1:0] != 0) ||
                       (funct3_mem_pipe0[1:0] == 1 && alu_out_mem_pipe0[0]))) begin
@@ -851,7 +879,9 @@ module core #(
         sync_fault1 = 1'b0;
         sync_cause1 = 32'd2;
         sync_value1 = instruction_mem_pipe1;
-        if (!pmp_fetch_allow[1]) begin
+        if (trigger_exec1) begin
+            sync_fault1=1'b1; sync_cause1=32'd3; sync_value1=pc_mem_pipe1;
+        end else if (!pmp_fetch_allow[1]) begin
             sync_fault1=1'b1; sync_cause1=32'd1; sync_value1=pc_mem_pipe1;
         end else if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1) sync_fault1 = 1'b1;
         else if (instruction_mem_pipe1 == 32'h00000073) begin
@@ -861,6 +891,8 @@ module core #(
         end else if ((is_jal_mem_pipe1 || is_jalr_mem_pipe1 ||
                      (is_cond_jump_mem_pipe1 && PCSrc_mem_pipe1[0])) && PC_branch_mem_pipe1[1:0] != 0) begin
             sync_fault1 = 1'b1; sync_cause1 = 0; sync_value1 = PC_branch_mem_pipe1;
+        end else if (trigger_data1) begin
+            sync_fault1=1'b1; sync_cause1=32'd3; sync_value1=alu_out_mem_pipe1;
         end else if ((MemRead_mem_pipe1 || |MemWrite_mem_pipe1) &&
                      ((funct3_mem_pipe1[1:0] == 2 && alu_out_mem_pipe1[1:0] != 0) ||
                       (funct3_mem_pipe1[1:0] == 1 && alu_out_mem_pipe1[0]))) begin
@@ -1324,6 +1356,7 @@ module core #(
         .interrupt_pending(irq_pending), .interrupt_cause(irq_cause),
         .mret_valid(mret_fire), .return_pc(machine_return_pc),
         .pmp_config(pmp_config), .pmp_address(pmp_address),
+        .trigger_control(trigger_control), .trigger_address(trigger_address), .trigger_enable(trigger_enable),
         .trap_cause(trap_cause), .trap_value(trap_value),
         .trap_valid(csr_trap_fire),
         .trap_pc(csr_trap_pc),
