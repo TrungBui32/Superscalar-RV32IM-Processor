@@ -83,6 +83,7 @@ module muldiv_unit
 
     integer i;
     always @(*) begin
+        temp_sum = 0; // Combinational scratch; never driven by a clocked process.
         if(RESET)
             shifted_op_comb = 0;
         else begin
@@ -393,13 +394,11 @@ module muldiv_unit
             shifted_op_reg <= 0;
             op2_reg <= 0;
             count <= 0;
-            temp_sum <= 0;
             quotient_sign <= 0;
             remainder_sign <= 0;
         end
         else if(n_state == COMPUTING & state == IDLE) begin // we are just transitioning into COMPUTING
             count <= 0;
-            temp_sum <= 0;
             if(MCycleOp[1:0] == 2'b10) begin //signed division
                 quotient_sign <= Operand1[width-1] ^ Operand2[width-1]; // sign of quotient
                 remainder_sign <= Operand1[width-1]; // sign of remainder same as dividend
