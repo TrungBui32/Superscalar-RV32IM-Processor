@@ -105,8 +105,13 @@ module core #(
     wire [31:0] WriteData;
     wire imem_stall;
     assign imem_stall = !imem_ready;
+    // A PMP write changes the raw CSRs one edge before the decoded cache.
+    // Existing control-CSR serialization normally leaves MEM empty here. If
+    // live work is ever present, hold it until the atomic cache refresh lands.
+    wire pmp_cache_pending;
+    wire pmp_cache_block=pmp_cache_pending && (valid_mem_pipe0 || valid_mem_pipe1);
     wire dmem_stall;
-    assign dmem_stall = !dmem_ready || misaligned_busy0 || misaligned_busy1;
+    assign dmem_stall = !dmem_ready || misaligned_busy0 || misaligned_busy1 || pmp_cache_block;
 
     // The signals that are commented out (except CLK) will need to be uncommented and attached a stage suffix for pipelining,
     //  except if the connection is within the same stage.
@@ -604,9 +609,9 @@ module core #(
     assign MemRead = (|LwSizeSel_pipe0) || (|LwSizeSel_pipe1); // Memory read signal
     assign WE_pipe0 = RegWrite_wb_pipe0; // Write enable for RegFile
     assign WE_pipe1 = RegWrite_wb_pipe1; // Write enable for RegFile
-    assign LwSizeSel_pipe0 = (valid_mem_pipe0 && !sync_fault0 && !RESET) ?
+    assign LwSizeSel_pipe0 = (valid_mem_pipe0 && !sync_fault0 && !pmp_cache_pending && !RESET) ?
         (misaligned_request0 ? (misaligned_busy0 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe0) : 5'b0;
-    assign LwSizeSel_pipe1 = (valid_mem_pipe1 && !sync_fault1 && !RESET && !(valid_mem_pipe0 && sync_fault0) &&
+    assign LwSizeSel_pipe1 = (valid_mem_pipe1 && !sync_fault1 && !pmp_cache_pending && !RESET && !(valid_mem_pipe0 && sync_fault0) &&
         !(mem_redirect && (is_cond_jump_mem_pipe0 || is_jal_mem_pipe0 || is_jalr_mem_pipe0))) ?
         (misaligned_request1 ? (misaligned_busy1 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe1) : 5'b0;
 
@@ -744,35 +749,44 @@ module core #(
     wire [511:0] pmp_address;
     wire [15:0] pmp_active_entries;
     wire [559:0] pmp_lower_bounds, pmp_upper_bounds;
-    pmp_decode pmp_regions(.config_bytes(pmp_config),.addresses(pmp_address),
+    wire [127:0] pmp_check_config;
+    pmp_region_cache pmp_regions(.clk(CLK),.rst(RESET),
+        .update_accepted(pmp_update_accepted),.refresh_pending(pmp_cache_pending),
+        .config_bytes(pmp_config),.addresses(pmp_address),.cached_config(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds));
+    function is_pmp_csr;
+        input [11:0] addr;
+        begin is_pmp_csr=addr[11:2]==10'h0e8 || addr[11:4]==8'h3b; end
+    endfunction
+    wire pmp_update_accepted=(csr_wfire_mem_pipe0 && is_pmp_csr(csr_waddr_mem_pipe0)) ||
+                             (csr_wfire_mem_pipe1 && is_pmp_csr(csr_waddr_mem_pipe1));
     wire [1:0] pmp_fetch_allow, pmp_data_allow;
     wire [31:0] pmp_badaddr0, pmp_badaddr1;
-    pmp_check pmp_fetch0(.config_bytes(pmp_config),
+    pmp_check pmp_fetch0(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(pc_mem_pipe0), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[0]), .fault_address());
-    pmp_check pmp_data0(.config_bytes(pmp_config),
+    pmp_check pmp_data0(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
         .access_type(MemRead_mem_pipe0 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
-    pmp_check pmp_fetch1(.config_bytes(pmp_config),
+    pmp_check pmp_fetch1(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(pc_mem_pipe1), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[1]), .fault_address());
-    pmp_check pmp_data1(.config_bytes(pmp_config),
+    pmp_check pmp_data1(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
         .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));
     // Hold all stages while a split access uses the external byte lane.
-    wire memory_byte_step=locked && imem_ready && dmem_ready && !MCycle_Busy && !is_ebreak_wb && !RESET;
+    wire memory_byte_step=locked && imem_ready && dmem_ready && !pmp_cache_pending && !MCycle_Busy && !is_ebreak_wb && !RESET;
     wire [31:0] access_last_byte0=alu_out_mem_pipe0+(32'd1 << funct3_mem_pipe0[1:0])-32'd1;
     wire misaligned_supported0=SUPPORT_MISALIGNED &&
         (alu_out_mem_pipe0 & MISALIGNED_MASK)==(MISALIGNED_BASE & MISALIGNED_MASK) &&
@@ -973,7 +987,7 @@ module core #(
     assign fencei_fire = pipeline_can_advance &&
         ((valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f && instruction_mem_pipe0[14:12] == 1) ||
          (valid_mem_pipe1 && instruction_mem_pipe1[6:0] == 7'h0f && instruction_mem_pipe1[14:12] == 1));
-    assign irq_fire = pipeline_can_advance && irq_pending && !csr_older_pending && !wb_pending;
+    assign irq_fire = pipeline_can_advance && !pmp_cache_pending && irq_pending && !csr_older_pending && !wb_pending;
     assign csr_trap_fire = pipeline_can_advance && (csr_trap_pipe0 || csr_trap_pipe1 || irq_fire);
     assign csr_trap_pc = irq_fire ? (valid_id_pipe0 ? pc_id_pipe0 : valid_id_pipe1 ? pc_id_pipe1 : PC) :
                          csr_trap_pipe0 ? pc_mem_pipe0 : pc_mem_pipe1;

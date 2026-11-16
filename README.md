@@ -217,11 +217,24 @@ access sizes fail closed. An all-ones NAPOT address covers the physical space;
 empty/reversed TOR ranges do not match. These changes preserve pipeline latency
 and do not add CSR-write cycles.
 
+`pmp_region_cache.v` registers decoded bounds, active bits, and permissions
+together, removing raw CSR decoding from the permission-check feedback path.
+An accepted PMP CSR write marks the following cycle as refresh pending. Live
+MEM work is held and memory accesses/interrupt entry are suppressed until the
+cache catches up. The existing control-CSR serialization normally supplies
+this bubble; the measured regressions retain their previous cycle counts.
+CSR readback still uses the original CSR bank. All 16 entries, address modes,
+locking rules, and partial-access faults remain supported.
+
 The combinational PMP entry checks and region decoder have SAT proofs against
-byte-interval and arithmetic-bound references. Run them from the repository root:
+byte-interval and arithmetic-bound references. A sequential proof checks cache
+coherence outside refresh and completion of a blocked refresh after one edge,
+assuming raw state changes only on accepted writes and those writes stop while
+live MEM work is blocked. Run them from the repository root:
 
 ```bash
 yosys -Q -s formal/pmp.ys
+yosys -Q -s formal/pmp_cache.ys
 ```
 
 Two native address triggers provide exact-address execute/load/store breakpoints
@@ -272,22 +285,30 @@ A Vivado 2023.2 core-only out-of-context implementation on
 `HD.CLK_SRC=BUFGCTRL_X0Y0`, measured the following with the same implementation
 flow and timing constraints:
 
-| Post-route metric | Baseline (`426e4e0`) | Forwarding/flush optimization |
-|---|---:|---:|
-| Worst setup slack | -16.454 ns | -4.487 ns |
-| Critical datapath delay | 35.751 ns | 23.969 ns |
-| Critical logic levels | 45 | 27 |
-| Hold slack | +0.035 ns | +0.037 ns |
-| LUTs | 19,722 | 19,574 |
-| Flip-flops | 6,454 | 6,519 |
+| Post-route metric | Baseline (`426e4e0`) | Forwarding/flush (`6c60c44`) | PMP region cache |
+|---|---:|---:|---:|
+| Worst setup slack | -16.454 ns | -4.487 ns | -0.919 ns |
+| Critical datapath delay | 35.751 ns | 23.969 ns | 20.269 ns |
+| Critical logic levels | 45 | 27 | 25 |
+| Hold slack | +0.035 ns | +0.037 ns | +0.033 ns |
+| LUTs | 19,722 | 19,574 | 19,551 |
+| Flip-flops | 6,454 | 6,519 | 7,619 |
 
 Routing completed without errors and hold timing passed. Setup timing still
-fails at 50 MHz. The setup-only period estimate improves from 36.454 ns to
-24.487 ns (about 27.4 to 40.8 MHz), not a frequency-sweep or full-SoC guarantee.
+fails at 50 MHz. The setup-only period estimate improves from 36.454 ns through
+24.487 ns to 20.919 ns (about 27.4, 40.8, and 47.8 MHz), not a frequency-sweep
+or full-SoC guarantee. The cache trades 1,100 additional flip-flops for timing.
 External input/output delays are unconstrained in this core-only run. No
 protocol-derived false-path or multicycle exceptions were added. The remaining
-worst path runs from a PMP address register through permission/write-qualification
-logic to another PMP address register.
+worst path runs from a MEM effective-address register through permission,
+misaligned-access stall, and CSR-write qualification to a PMP configuration
+register's clock enable. The raw PMP decode is no longer on this path.
+
+Cache validation passed 344 ISA/directed runs, two PMA fault runs, four
+interrupt-during-refresh cases, the CSR regression, Verilator lint, Yosys
+structural checks, and the cache coherence proof. Directed cases include all
+16 locked entries, immediate accesses after PMP writes, TOR predecessor
+updates, partial misaligned stores, and traps with dependent younger work.
 
 Run the trap-priority proof and pipeline sequential equivalence checks with:
 
