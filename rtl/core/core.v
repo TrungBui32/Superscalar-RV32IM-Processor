@@ -2131,6 +2131,11 @@ module core #(
     .MEM_WB_flush_pipe1(MEM_WB_flush_pipe1)
    );
 
+   // Forwarding describes registered producer intent, independently of late
+   // MEM permission/trap decisions. A MEM fault kills every younger EX/ID
+   // instruction before it can commit; actual writes remain trap-qualified.
+   // Feeding fault/flush back into this select would join PMP -> EX ALU ->
+   // address-hazard -> pipeline-control logic in one combinational path.
    forward_ctrl forward_ctrl_inst(
     .id_rs1_pipe0(rs1_id_pipe0),
     .id_rs2_pipe0(rs2_id_pipe0),
@@ -2146,12 +2151,12 @@ module core #(
 
     .is_load_mem_pipe0(MemToReg_mem_pipe0),
     .mem_rd_pipe0(rd_idx_mem_pipe0),
-    .mem_RegWrite_pipe0(RegWrite_mem_pipe0 && !csr_error_mem_pipe0 && !MEM_WB_flush_pipe0),
+    .mem_RegWrite_pipe0(valid_mem_pipe0 && RegWrite_mem_pipe0),
     .mem_MCycle_pipe0(MCycle_mem_pipe0),
 
     .is_load_mem_pipe1(MemToReg_mem_pipe1),
     .mem_rd_pipe1(rd_idx_mem_pipe1),
-    .mem_RegWrite_pipe1(RegWrite_mem_pipe1 && !csr_error_mem_pipe1 && !MEM_WB_flush_pipe1),
+    .mem_RegWrite_pipe1(valid_mem_pipe1 && RegWrite_mem_pipe1),
     .mem_MCycle_pipe1(MCycle_mem_pipe1),
 
     .is_load_wb_pipe0(MemToReg_wb_pipe0),
