@@ -14,6 +14,8 @@ module csr #(
     input [1:0] retire_count,
     output [31:0] trap_vector,
     output [31:0] return_pc,
+    output [127:0] pmp_config,
+    output [511:0] pmp_address,
     output interrupt_pending,
     output [31:0] interrupt_cause,
     // Oldest first: MEM0, MEM1, EX0, EX1. Inputs are final write intent.
@@ -86,6 +88,14 @@ module csr #(
     localparam [31:0] MSTATUS_MASK = 32'h0000_0088; // MIE, MPIE.
     localparam [31:0] MIE_MASK = 32'h0000_0888; // MEIE, MTIE, MSIE.
     reg [31:0] mstatus, mie, mtvec, mscratch, mepc, mcause, mtval;
+    // Sixteen entries, 4-byte granularity (G=0), 34-bit physical address encoding.
+    reg [7:0] pmpcfg [0:15];
+    reg [31:0] pmpaddr [0:15];
+    genvar pmp_index;
+    generate for (pmp_index=0; pmp_index<16; pmp_index=pmp_index+1) begin: pmp_outputs
+        assign pmp_config[pmp_index*8 +:8] = pmpcfg[pmp_index];
+        assign pmp_address[pmp_index*32 +:32] = pmpaddr[pmp_index];
+    end endgenerate
     reg [2:0] mcountinhibit;
     reg [63:0] mcycle, minstret;
     wire [31:0] misa = MISA_VALUE;
@@ -109,7 +119,8 @@ module csr #(
                 CSR_CYCLE, CSR_CYCLEH, CSR_INSTRET, CSR_INSTRETH, CSR_TIME, CSR_TIMEH,
                 CSR_MVENDORID, CSR_MARCHID, CSR_MIMPID, CSR_MHARTID, CSR_MCONFIGPTR:
                     csr_address_exists = 1'b1;
-                default: csr_address_exists = 1'b0;
+                default: csr_address_exists = (addr >= 12'h3a0 && addr <= 12'h3a3) ||
+                    (addr >= 12'h3b0 && addr <= 12'h3bf);
             endcase
         end
     endfunction
@@ -157,6 +168,7 @@ module csr #(
             for (i=0;i<4;i=i+1)
                 if (valid[i] && csr_address_exists(addresses[12*i +:12]) &&
                     addresses[12*i +:12] != CSR_MIP &&
+                    !(addresses[12*i +:12] >= 12'h3a0 && addresses[12*i +:12] <= 12'h3bf) &&
                     addresses[12*i+10 +:2] != 2'b11 &&
                     backing_address(addr) == backing_address(addresses[12*i +:12]))
                     forward_value = normalize_write(addresses[12*i +:12],values[32*i +:32]);
@@ -191,7 +203,12 @@ module csr #(
                 CSR_INSTRETH: csr_rdata_pipe0 = minstret[63:32];
                 CSR_TIME: csr_rdata_pipe0 = time_value[31:0];
                 CSR_TIMEH: csr_rdata_pipe0 = time_value[63:32];
-                default: csr_rdata_pipe0 = 0;
+                default: begin
+                    if (csr_raddr_pipe0 >= 12'h3a0 && csr_raddr_pipe0 <= 12'h3a3)
+                        csr_rdata_pipe0 = pmp_config[csr_raddr_pipe0[1:0]*32 +:32];
+                    else if (csr_raddr_pipe0 >= 12'h3b0 && csr_raddr_pipe0 <= 12'h3bf)
+                        csr_rdata_pipe0 = pmpaddr[csr_raddr_pipe0[3:0]];
+                end
             endcase
             if (!csr_rillegal_pipe0)
                 csr_rdata_pipe0 = forward_value(csr_raddr_pipe0, csr_rdata_pipe0,
@@ -227,7 +244,12 @@ module csr #(
                 CSR_INSTRETH: csr_rdata_pipe1 = minstret[63:32];
                 CSR_TIME: csr_rdata_pipe1 = time_value[31:0];
                 CSR_TIMEH: csr_rdata_pipe1 = time_value[63:32];
-                default: csr_rdata_pipe1 = 0;
+                default: begin
+                    if (csr_raddr_pipe1 >= 12'h3a0 && csr_raddr_pipe1 <= 12'h3a3)
+                        csr_rdata_pipe1 = pmp_config[csr_raddr_pipe1[1:0]*32 +:32];
+                    else if (csr_raddr_pipe1 >= 12'h3b0 && csr_raddr_pipe1 <= 12'h3bf)
+                        csr_rdata_pipe1 = pmpaddr[csr_raddr_pipe1[3:0]];
+                end
             endcase
             if (!csr_rillegal_pipe1)
                 csr_rdata_pipe1 = forward_value(csr_raddr_pipe1, csr_rdata_pipe1,
@@ -273,6 +295,32 @@ module csr #(
                     CSR_MTVAL: mtval <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
                     default: begin end // Fixed, hardware-owned or counter CSR.
                 endcase
+            end
+        end
+    end
+
+    function [7:0] pmp_normalize;
+        input [7:0] value;
+        // W=1/R=0 is reserved; coerce W to zero. Reserved bits read zero.
+        begin pmp_normalize = value & 8'h9d | {6'b0,(value[1] & value[0]),1'b0}; end
+    endfunction
+    integer pmp_i;
+    always @(posedge clk) begin
+        for (pmp_i=0; pmp_i<16; pmp_i=pmp_i+1) begin
+            if (rst) begin pmpcfg[pmp_i]<=0; pmpaddr[pmp_i]<=0; end
+            else begin
+                if (!pmpcfg[pmp_i][7]) begin
+                    if (write0 && csr_waddr_pipe0 == 12'h3a0 + (pmp_i/4))
+                        pmpcfg[pmp_i] <= pmp_normalize(csr_wdata_pipe0[(pmp_i%4)*8 +:8]);
+                    if (write1 && csr_waddr_pipe1 == 12'h3a0 + (pmp_i/4))
+                        pmpcfg[pmp_i] <= pmp_normalize(csr_wdata_pipe1[(pmp_i%4)*8 +:8]);
+                end
+                // A locked TOR entry also locks the preceding address register.
+                if (!pmpcfg[pmp_i][7] &&
+                    (pmp_i==15 || (pmpcfg[(pmp_i+1)%16] & 8'h98) != 8'h88)) begin
+                    if (write0 && csr_waddr_pipe0 == 12'h3b0+pmp_i) pmpaddr[pmp_i]<=csr_wdata_pipe0;
+                    if (write1 && csr_waddr_pipe1 == 12'h3b0+pmp_i) pmpaddr[pmp_i]<=csr_wdata_pipe1;
+                end
             end
         end
     end

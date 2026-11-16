@@ -705,6 +705,24 @@ module core #(
     wire branch_pred_mem_pipe0;
     wire branch_pred_mem_pipe1;
 
+    wire [127:0] pmp_config;
+    wire [511:0] pmp_address;
+    wire [1:0] pmp_fetch_allow, pmp_data_allow;
+    wire [31:0] pmp_badaddr0, pmp_badaddr1;
+    pmp_check pmp_fetch0(.config_bytes(pmp_config), .addresses(pmp_address),
+        .address(pc_mem_pipe0), .size(3'd4), .access_type(3'b100),
+        .allow(pmp_fetch_allow[0]), .fault_address());
+    pmp_check pmp_data0(.config_bytes(pmp_config), .addresses(pmp_address),
+        .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
+        .access_type(MemRead_mem_pipe0 ? 3'b001 : 3'b010),
+        .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
+    pmp_check pmp_fetch1(.config_bytes(pmp_config), .addresses(pmp_address),
+        .address(pc_mem_pipe1), .size(3'd4), .access_type(3'b100),
+        .allow(pmp_fetch_allow[1]), .fault_address());
+    pmp_check pmp_data1(.config_bytes(pmp_config), .addresses(pmp_address),
+        .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
+        .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
+        .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));
     // Control CSR writes remain barriers; data CSR accesses bypass older
     // EX/MEM writes. One CSR per issue group keeps same-cycle RMW ordered.
     wire csr_wait, csr_split;
@@ -726,7 +744,7 @@ module core #(
                 12'h304, 12'h104, 12'h344, 12'h144,
                 12'h305, 12'h105, 12'h306, 12'h106:
                     csr_control_write = 1'b1;
-                default: csr_control_write = 1'b0;
+                default: csr_control_write = (addr >= 12'h3a0 && addr <= 12'h3bf);
             endcase
         end
     endfunction
@@ -809,7 +827,9 @@ module core #(
         sync_fault0 = 1'b0;
         sync_cause0 = 32'd2;
         sync_value0 = instruction_mem_pipe0;
-        if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0) sync_fault0 = 1'b1;
+        if (!pmp_fetch_allow[0]) begin
+            sync_fault0=1'b1; sync_cause0=32'd1; sync_value0=pc_mem_pipe0;
+        end else if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0) sync_fault0 = 1'b1;
         else if (instruction_mem_pipe0 == 32'h00000073) begin
             sync_fault0 = 1'b1; sync_cause0 = 32'd11; sync_value0 = 0;
         end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe0 == 32'h00100073) begin
@@ -822,13 +842,18 @@ module core #(
                       (funct3_mem_pipe0[1:0] == 1 && alu_out_mem_pipe0[0]))) begin
             sync_fault0 = 1'b1; sync_cause0 = MemRead_mem_pipe0 ? 32'd4 : 32'd6;
             sync_value0 = alu_out_mem_pipe0;
+        end else if ((MemRead_mem_pipe0 || |MemWrite_mem_pipe0) && !pmp_data_allow[0]) begin
+            sync_fault0=1'b1; sync_cause0=MemRead_mem_pipe0 ? 32'd5 : 32'd7;
+            sync_value0=pmp_badaddr0;
         end
     end
     always @(*) begin
         sync_fault1 = 1'b0;
         sync_cause1 = 32'd2;
         sync_value1 = instruction_mem_pipe1;
-        if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1) sync_fault1 = 1'b1;
+        if (!pmp_fetch_allow[1]) begin
+            sync_fault1=1'b1; sync_cause1=32'd1; sync_value1=pc_mem_pipe1;
+        end else if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1) sync_fault1 = 1'b1;
         else if (instruction_mem_pipe1 == 32'h00000073) begin
             sync_fault1 = 1'b1; sync_cause1 = 32'd11; sync_value1 = 0;
         end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe1 == 32'h00100073) begin
@@ -841,6 +866,9 @@ module core #(
                       (funct3_mem_pipe1[1:0] == 1 && alu_out_mem_pipe1[0]))) begin
             sync_fault1 = 1'b1; sync_cause1 = MemRead_mem_pipe1 ? 32'd4 : 32'd6;
             sync_value1 = alu_out_mem_pipe1;
+        end else if ((MemRead_mem_pipe1 || |MemWrite_mem_pipe1) && !pmp_data_allow[1]) begin
+            sync_fault1=1'b1; sync_cause1=MemRead_mem_pipe1 ? 32'd5 : 32'd7;
+            sync_value1=pmp_badaddr1;
         end
     end
     assign csr_trap_pipe0 = valid_mem_pipe0 && sync_fault0;
@@ -1295,6 +1323,7 @@ module core #(
         .time_value(time_value), .retire_count(retire_count),
         .interrupt_pending(irq_pending), .interrupt_cause(irq_cause),
         .mret_valid(mret_fire), .return_pc(machine_return_pc),
+        .pmp_config(pmp_config), .pmp_address(pmp_address),
         .trap_cause(trap_cause), .trap_value(trap_value),
         .trap_valid(csr_trap_fire),
         .trap_pc(csr_trap_pc),
