@@ -370,16 +370,16 @@ module csr #(
             if (rst) begin pmpcfg[pmp_i]<=0; pmpaddr[pmp_i]<=0; end
             else begin
                 if (!pmpcfg[pmp_i][7]) begin
-                    if (write0 && csr_waddr_pipe0 == 12'h3a0 + (pmp_i/4))
+                    if (write0 && csr_waddr_pipe0 == {10'h0e8,pmp_i[3:2]})
                         pmpcfg[pmp_i] <= pmp_normalize(csr_wdata_pipe0[(pmp_i%4)*8 +:8]);
-                    if (write1 && csr_waddr_pipe1 == 12'h3a0 + (pmp_i/4))
+                    if (write1 && csr_waddr_pipe1 == {10'h0e8,pmp_i[3:2]})
                         pmpcfg[pmp_i] <= pmp_normalize(csr_wdata_pipe1[(pmp_i%4)*8 +:8]);
                 end
                 // A locked TOR entry also locks the preceding address register.
                 if (!pmpcfg[pmp_i][7] &&
                     (pmp_i==15 || (pmpcfg[(pmp_i+1)%16] & 8'h98) != 8'h88)) begin
-                    if (write0 && csr_waddr_pipe0 == 12'h3b0+pmp_i) pmpaddr[pmp_i]<=csr_wdata_pipe0;
-                    if (write1 && csr_waddr_pipe1 == 12'h3b0+pmp_i) pmpaddr[pmp_i]<=csr_wdata_pipe1;
+                    if (write0 && csr_waddr_pipe0 == {8'h3b,pmp_i[3:0]}) pmpaddr[pmp_i]<=csr_wdata_pipe0;
+                    if (write1 && csr_waddr_pipe1 == {8'h3b,pmp_i[3:0]}) pmpaddr[pmp_i]<=csr_wdata_pipe1;
                 end
             end
         end

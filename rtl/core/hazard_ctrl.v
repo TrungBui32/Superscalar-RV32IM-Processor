@@ -121,7 +121,12 @@ module hazard_ctrl (
 
 // 2) Memory access address conflicts
   wire same_addr_mem_ex;
-  assign same_addr_mem_ex = (ex_addr_pipe0[31:2] == ex_addr_pipe1[31:2]);
+  // Split accesses can overlap the next word. Conservatively serialize
+  // adjacent words whenever either effective address has a byte offset.
+  assign same_addr_mem_ex = (ex_addr_pipe0[31:2] == ex_addr_pipe1[31:2]) ||
+      ((|ex_addr_pipe0[1:0] || |ex_addr_pipe1[1:0]) &&
+       ((ex_addr_pipe0[31:2]+30'd1 == ex_addr_pipe1[31:2]) ||
+        (ex_addr_pipe1[31:2]+30'd1 == ex_addr_pipe0[31:2])));
 
   wire same_addr_mem_write_ex;
   assign same_addr_mem_write_ex = ((ex_is_store_pipe0 && ex_is_store_pipe1) && same_addr_mem_ex) ? 1'b1 : 1'b0;

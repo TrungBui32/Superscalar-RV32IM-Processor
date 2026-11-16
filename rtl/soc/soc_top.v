@@ -719,7 +719,8 @@ end
 ////----------------------------------------------------------------
 //// RV port map
 ////----------------------------------------------------------------
-core #(.PC_INIT(PC_INIT)) core_inst(
+core #(.PC_INIT(PC_INIT), .MISALIGNED_BASE(DMEM_BASE),
+       .MISALIGNED_MASK(32'hffff0000)) core_inst(
     .irq_software(timer_software_irq), .irq_timer(timer_irq), .irq_external(1'b0),
     .time_value(machine_time),
 	.CLK(clk1),			// use 100MHz

@@ -9,7 +9,11 @@
 module core #(
     parameter PC_INIT = 32'h00400000,
     parameter CSR_FORWARD_ENABLE = 1'b1,
-    parameter DEBUG_HALT_ON_EBREAK = 1'b0
+    parameter DEBUG_HALT_ON_EBREAK = 1'b0,
+    parameter SUPPORT_MISALIGNED = 1'b1,
+    // Restrict splitting to byte-addressable RAM when integrating MMIO.
+    parameter [31:0] MISALIGNED_BASE = 32'b0,
+    parameter [31:0] MISALIGNED_MASK = 32'b0
 ) (
     input CLK,
     input RESET,
@@ -102,7 +106,7 @@ module core #(
     wire imem_stall;
     assign imem_stall = !imem_ready;
     wire dmem_stall;
-    assign dmem_stall = !dmem_ready;
+    assign dmem_stall = !dmem_ready || misaligned_busy0 || misaligned_busy1;
 
     // The signals that are commented out (except CLK) will need to be uncommented and attached a stage suffix for pipelining,
     //  except if the connection is within the same stage.
@@ -586,8 +590,8 @@ module core #(
     reg [31:0] Src_A_MCycle;
     reg [31:0] Src_B_MCycle;
 
-    assign ALUResult_pipe0 = alu_out_mem_pipe0;
-    assign ALUResult_pipe1 = alu_out_mem_pipe1;
+    assign ALUResult_pipe0 = misaligned_request0 ? misaligned_addr0 : alu_out_mem_pipe0;
+    assign ALUResult_pipe1 = misaligned_request1 ? misaligned_addr1 : alu_out_mem_pipe1;
 
     
     // ProgramCounter signals
@@ -597,19 +601,22 @@ module core #(
     // Other internal signals here
     reg [31:0] PC_value;
 
-    assign MemRead = MemRead_mem_pipe0 || MemRead_mem_pipe1; // Memory read signal
+    assign MemRead = (|LwSizeSel_pipe0) || (|LwSizeSel_pipe1); // Memory read signal
     assign WE_pipe0 = RegWrite_wb_pipe0; // Write enable for RegFile
     assign WE_pipe1 = RegWrite_wb_pipe1; // Write enable for RegFile
-    assign LwSizeSel_pipe0 = LwSizeSel_mem_pipe0;
-    assign LwSizeSel_pipe1 = LwSizeSel_mem_pipe1;
+    assign LwSizeSel_pipe0 = (valid_mem_pipe0 && !sync_fault0 && !RESET) ?
+        (misaligned_request0 ? (misaligned_busy0 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe0) : 5'b0;
+    assign LwSizeSel_pipe1 = (valid_mem_pipe1 && !sync_fault1 && !RESET && !(valid_mem_pipe0 && sync_fault0) &&
+        !(mem_redirect && (is_cond_jump_mem_pipe0 || is_jal_mem_pipe0 || is_jalr_mem_pipe0))) ?
+        (misaligned_request1 ? (misaligned_busy1 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe1) : 5'b0;
 
     always @(*) begin
         case(LwSizeSel_mem_pipe0)
-            5'b00001: mem_rdata_mem_pipe0 = {{24{ReadData_in_pipe0[7]}}, ReadData_in_pipe0[7:0]}; // lb
-            5'b00010: mem_rdata_mem_pipe0 = {{16{ReadData_in_pipe0[15]}}, ReadData_in_pipe0[15:0]}; // lh
-            5'b00100: mem_rdata_mem_pipe0 = ReadData_in_pipe0[31:0]; // lw
-            5'b01000: mem_rdata_mem_pipe0 = {24'b0, ReadData_in_pipe0[7:0]}; // lbu
-            5'b10000: mem_rdata_mem_pipe0 = {16'b0, ReadData_in_pipe0[15:0]}; // lhu
+            5'b00001: mem_rdata_mem_pipe0 = {{24{load_data_input0[7]}}, load_data_input0[7:0]}; // lb
+            5'b00010: mem_rdata_mem_pipe0 = {{16{load_data_input0[15]}}, load_data_input0[15:0]}; // lh
+            5'b00100: mem_rdata_mem_pipe0 = load_data_input0[31:0]; // lw
+            5'b01000: mem_rdata_mem_pipe0 = {24'b0, load_data_input0[7:0]}; // lbu
+            5'b10000: mem_rdata_mem_pipe0 = {16'b0, load_data_input0[15:0]}; // lhu
             default: mem_rdata_mem_pipe0 = 32'b0; // should not occur
         endcase
     end
@@ -617,18 +624,20 @@ module core #(
 
     always @(*) begin
         case(LwSizeSel_mem_pipe1)
-            5'b00001: mem_rdata_mem_pipe1 = {{24{ReadData_in_pipe1[7]}}, ReadData_in_pipe1[7:0]}; // lb
-            5'b00010: mem_rdata_mem_pipe1 = {{16{ReadData_in_pipe1[15]}}, ReadData_in_pipe1[15:0]}; // lh
-            5'b00100: mem_rdata_mem_pipe1 = ReadData_in_pipe1[31:0]; // lw
-            5'b01000: mem_rdata_mem_pipe1 = {24'b0, ReadData_in_pipe1[7:0]}; // lbu
-            5'b10000: mem_rdata_mem_pipe1 = {16'b0, ReadData_in_pipe1[15:0]}; // lhu
+            5'b00001: mem_rdata_mem_pipe1 = {{24{load_data_input1[7]}}, load_data_input1[7:0]}; // lb
+            5'b00010: mem_rdata_mem_pipe1 = {{16{load_data_input1[15]}}, load_data_input1[15:0]}; // lh
+            5'b00100: mem_rdata_mem_pipe1 = load_data_input1[31:0]; // lw
+            5'b01000: mem_rdata_mem_pipe1 = {24'b0, load_data_input1[7:0]}; // lbu
+            5'b10000: mem_rdata_mem_pipe1 = {16'b0, load_data_input1[15:0]}; // lhu
             default: mem_rdata_mem_pipe1 = 32'b0; // should not occur
         endcase
     end
 
     // WriteData logic
-    assign WriteData_out_pipe0 = store_data_mem_pipe0;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe0 = (MEM_WB_en_pipe0 && !MEM_WB_flush_pipe0)? MemWrite_mem_pipe0 : 3'b000; // Change datapath as appropriate if supporting sb/sh
+    assign WriteData_out_pipe0 = misaligned_request0 ? misaligned_wdata0 : store_data_mem_pipe0;    // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe0 = misaligned_request0 ?
+        ((misaligned_busy0 && memory_byte_step && |MemWrite_mem_pipe0) ? 3'b001 : 3'b000) :
+        ((MEM_WB_en_pipe0 && !MEM_WB_flush_pipe0) ? MemWrite_mem_pipe0 : 3'b000); // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe0;
     assign store_data_ex_pipe0 = rs2_val_ex_forward_pipe0;
 
@@ -656,8 +665,10 @@ module core #(
     end
 
     // WriteData logic
-    assign WriteData_out_pipe1 = store_data_mem_pipe1;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe1 = (MEM_WB_en_pipe1 && !MEM_WB_flush_pipe1)? MemWrite_mem_pipe1 : 3'b000; // Change datapath as appropriate if supporting sb/sh
+    assign WriteData_out_pipe1 = misaligned_request1 ? misaligned_wdata1 : store_data_mem_pipe1;    // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe1 = misaligned_request1 ?
+        ((misaligned_busy1 && memory_byte_step && |MemWrite_mem_pipe1) ? 3'b001 : 3'b000) :
+        ((MEM_WB_en_pipe1 && !MEM_WB_flush_pipe1) ? MemWrite_mem_pipe1 : 3'b000); // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe1;
     assign store_data_ex_pipe1 = rs2_val_ex_forward_pipe1;
 
@@ -747,6 +758,43 @@ module core #(
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
         .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));
+    // Hold all stages while a split access uses the external byte lane.
+    wire memory_byte_step=locked && imem_ready && dmem_ready && !MCycle_Busy && !is_ebreak_wb && !RESET;
+    wire [31:0] access_last_byte0=alu_out_mem_pipe0+(32'd1 << funct3_mem_pipe0[1:0])-32'd1;
+    wire misaligned_supported0=SUPPORT_MISALIGNED &&
+        (alu_out_mem_pipe0 & MISALIGNED_MASK)==(MISALIGNED_BASE & MISALIGNED_MASK) &&
+        (access_last_byte0 & MISALIGNED_MASK)==(MISALIGNED_BASE & MISALIGNED_MASK);
+    wire misaligned_request0=misaligned_supported0 && valid_mem_pipe0 &&
+        (MemRead_mem_pipe0 || |MemWrite_mem_pipe0) && !sync_fault0 &&
+        ((funct3_mem_pipe0[1:0]==2 && alu_out_mem_pipe0[1:0]!=0) ||
+         (funct3_mem_pipe0[1:0]==1 && alu_out_mem_pipe0[0]));
+    wire misaligned_busy0;
+    wire [31:0] misaligned_addr0, misaligned_wdata0, misaligned_rdata0;
+    wire [31:0] load_data_input0=misaligned_request0 ? misaligned_rdata0 : ReadData_in_pipe0;
+    misaligned_access misaligned0(.clk(CLK),.rst(RESET),.request(misaligned_request0),
+        .step(memory_byte_step),.retire(MEM_WB_en_pipe0),
+        .size(3'd1 << funct3_mem_pipe0[1:0]),.address(alu_out_mem_pipe0),
+        .store_data(store_data_mem_pipe0),.read_data(ReadData_in_pipe0),
+        .busy(misaligned_busy0),.bus_address(misaligned_addr0),
+        .bus_store_data(misaligned_wdata0),.load_data(misaligned_rdata0));
+    wire [31:0] access_last_byte1=alu_out_mem_pipe1+(32'd1 << funct3_mem_pipe1[1:0])-32'd1;
+    wire misaligned_supported1=SUPPORT_MISALIGNED &&
+        (alu_out_mem_pipe1 & MISALIGNED_MASK)==(MISALIGNED_BASE & MISALIGNED_MASK) &&
+        (access_last_byte1 & MISALIGNED_MASK)==(MISALIGNED_BASE & MISALIGNED_MASK);
+    wire misaligned_request1=misaligned_supported1 && valid_mem_pipe1 &&
+        (MemRead_mem_pipe1 || |MemWrite_mem_pipe1) && !sync_fault1 &&
+        ((funct3_mem_pipe1[1:0]==2 && alu_out_mem_pipe1[1:0]!=0) ||
+         (funct3_mem_pipe1[1:0]==1 && alu_out_mem_pipe1[0])) && !(valid_mem_pipe0 && sync_fault0) &&
+        !(mem_redirect && (is_cond_jump_mem_pipe0 || is_jal_mem_pipe0 || is_jalr_mem_pipe0));
+    wire misaligned_busy1;
+    wire [31:0] misaligned_addr1, misaligned_wdata1, misaligned_rdata1;
+    wire [31:0] load_data_input1=misaligned_request1 ? misaligned_rdata1 : ReadData_in_pipe1;
+    misaligned_access misaligned1(.clk(CLK),.rst(RESET),.request(misaligned_request1),
+        .step(memory_byte_step),.retire(MEM_WB_en_pipe1),
+        .size(3'd1 << funct3_mem_pipe1[1:0]),.address(alu_out_mem_pipe1),
+        .store_data(store_data_mem_pipe1),.read_data(ReadData_in_pipe1),
+        .busy(misaligned_busy1),.bus_address(misaligned_addr1),
+        .bus_store_data(misaligned_wdata1),.load_data(misaligned_rdata1));
     // Control CSR writes remain barriers; data CSR accesses bypass older
     // EX/MEM writes. One CSR per issue group keeps same-cycle RMW ordered.
     wire csr_wait, csr_split;
@@ -755,7 +803,7 @@ module core #(
     wire [3:0] csr_forward_valid;
     wire [47:0] csr_forward_addr;
     wire [127:0] csr_forward_data;
-    wire pipeline_can_advance = locked && imem_ready && dmem_ready &&
+    wire pipeline_can_advance = locked && imem_ready && !dmem_stall &&
                                 !MCycle_Busy && !is_ebreak_wb && !RESET;
     wire csr_pending = csr_rvalid_ex_pipe0 || csr_rvalid_ex_pipe1 ||
                        csr_rvalid_mem_pipe0 || csr_rvalid_mem_pipe1;
@@ -865,7 +913,7 @@ module core #(
             sync_fault0 = 1'b1; sync_cause0 = 0; sync_value0 = PC_branch_mem_pipe0;
         end else if (trigger_data0) begin
             sync_fault0=1'b1; sync_cause0=32'd3; sync_value0=alu_out_mem_pipe0;
-        end else if ((MemRead_mem_pipe0 || |MemWrite_mem_pipe0) &&
+        end else if (!misaligned_supported0 && (MemRead_mem_pipe0 || |MemWrite_mem_pipe0) &&
                      ((funct3_mem_pipe0[1:0] == 2 && alu_out_mem_pipe0[1:0] != 0) ||
                       (funct3_mem_pipe0[1:0] == 1 && alu_out_mem_pipe0[0]))) begin
             sync_fault0 = 1'b1; sync_cause0 = MemRead_mem_pipe0 ? 32'd4 : 32'd6;
@@ -893,7 +941,7 @@ module core #(
             sync_fault1 = 1'b1; sync_cause1 = 0; sync_value1 = PC_branch_mem_pipe1;
         end else if (trigger_data1) begin
             sync_fault1=1'b1; sync_cause1=32'd3; sync_value1=alu_out_mem_pipe1;
-        end else if ((MemRead_mem_pipe1 || |MemWrite_mem_pipe1) &&
+        end else if (!misaligned_supported1 && (MemRead_mem_pipe1 || |MemWrite_mem_pipe1) &&
                      ((funct3_mem_pipe1[1:0] == 2 && alu_out_mem_pipe1[1:0] != 0) ||
                       (funct3_mem_pipe1[1:0] == 1 && alu_out_mem_pipe1[0]))) begin
             sync_fault1 = 1'b1; sync_cause1 = MemRead_mem_pipe1 ? 32'd4 : 32'd6;
