@@ -742,19 +742,32 @@ module core #(
         {1'b0,(|MemWrite_mem_pipe1),MemRead_mem_pipe1},trigger_control,trigger_address);
     wire [127:0] pmp_config;
     wire [511:0] pmp_address;
+    wire [15:0] pmp_active_entries;
+    wire [559:0] pmp_lower_bounds, pmp_upper_bounds;
+    pmp_decode pmp_regions(.config_bytes(pmp_config),.addresses(pmp_address),
+        .active_entries(pmp_active_entries),
+        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds));
     wire [1:0] pmp_fetch_allow, pmp_data_allow;
     wire [31:0] pmp_badaddr0, pmp_badaddr1;
-    pmp_check pmp_fetch0(.config_bytes(pmp_config), .addresses(pmp_address),
+    pmp_check pmp_fetch0(.config_bytes(pmp_config),
+        .active_entries(pmp_active_entries),
+        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(pc_mem_pipe0), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[0]), .fault_address());
-    pmp_check pmp_data0(.config_bytes(pmp_config), .addresses(pmp_address),
+    pmp_check pmp_data0(.config_bytes(pmp_config),
+        .active_entries(pmp_active_entries),
+        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
         .access_type(MemRead_mem_pipe0 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
-    pmp_check pmp_fetch1(.config_bytes(pmp_config), .addresses(pmp_address),
+    pmp_check pmp_fetch1(.config_bytes(pmp_config),
+        .active_entries(pmp_active_entries),
+        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(pc_mem_pipe1), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[1]), .fault_address());
-    pmp_check pmp_data1(.config_bytes(pmp_config), .addresses(pmp_address),
+    pmp_check pmp_data1(.config_bytes(pmp_config),
+        .active_entries(pmp_active_entries),
+        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
         .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));

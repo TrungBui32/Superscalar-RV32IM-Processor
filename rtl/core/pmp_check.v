@@ -1,55 +1,41 @@
 `timescale 1ns/1ps
-// M-mode PMP check. Lowest-numbered entry matching any byte wins; a partial
-// match faults, and unlocked entries bypass R/W/X in M-mode. End is exclusive.
+// Parallel M-mode permission checks against shared, decoded PMP ranges.
+// The lowest entry matching any byte wins; partial matches always fault.
 module pmp_check(
     input [127:0] config_bytes,
-    input [511:0] addresses,
+    input [15:0] active_entries,
+    input [559:0] lower_bounds,
+    input [559:0] upper_bounds,
     input [31:0] address,
     input [2:0] size,
     input [2:0] access_type, // X W R
-    output reg allow,
+    output allow,
     output reg [31:0] fault_address
 );
-    integer i, bit_index;
-    reg found;
-    reg [7:0] cfg;
-    reg [31:0] encoded;
-    reg [34:0] lower, upper, first_byte, end_byte, region_size;
-    reg trailing;
+    wire [34:0] first_byte={3'b0,address};
+    wire [34:0] end_byte=first_byte+{32'b0,size};
+    wire [15:0] entry_matches, permissions;
+    // Isolate the first match without a serial chain through all 16 entries.
+    wire [15:0] winner=entry_matches & (~entry_matches+16'd1);
+    wire [511:0] fault_candidates;
+    assign allow=(end_byte<=35'h100000000) &&
+                 (!(|entry_matches) || |(winner & permissions));
+    genvar i;
+    generate for (i=0; i<16; i=i+1) begin: entry
+        wire [7:0] cfg=config_bytes[i*8 +:8];
+        wire [34:0] lower=lower_bounds[i*35 +:35];
+        wire [34:0] upper=upper_bounds[i*35 +:35];
+        assign entry_matches[i]=active_entries[i] && first_byte<upper && end_byte>lower;
+        assign permissions[i]=(first_byte>=lower && end_byte<=upper) &&
+                              (!cfg[7] || (cfg[2:0] & access_type)==access_type);
+        assign fault_candidates[i*32 +:32]=(first_byte>=lower && end_byte>upper) ?
+                                         upper[31:0] : address;
+    end endgenerate
+    integer j;
     always @(*) begin
-        bit_index=0;
-        allow=1; found=0; fault_address=address;
-        first_byte={3'b0,address}; end_byte=first_byte+{32'b0,size};
-        // The bus has 32 address bits; a split access may not wrap to zero.
-        allow=(end_byte<=35'h100000000);
-        cfg=0; encoded=0; lower=0; upper=0; region_size=0; trailing=0;
-        for (i=0;i<16;i=i+1) begin
-            cfg=config_bytes[i*8 +:8]; encoded=addresses[i*32 +:32];
-            lower=0; upper=0; region_size=0; trailing=0;
-            case (cfg[4:3])
-                2'b01: begin // TOR
-                    if (i!=0) lower={1'b0,addresses[(i-1)*32 +:32],2'b0};
-                    upper={1'b0,encoded,2'b0};
-                end
-                2'b10: begin // NA4
-                    lower={1'b0,encoded,2'b0}; upper=lower+35'd4;
-                end
-                2'b11: begin // NAPOT: n trailing ones encode 2^(n+3) bytes.
-                    region_size=35'd8; trailing=1;
-                    for (bit_index=0;bit_index<32;bit_index=bit_index+1)
-                        if (trailing && encoded[bit_index]) region_size=region_size<<1;
-                        else trailing=0;
-                    lower={1'b0,encoded,2'b0} & ~(region_size-1);
-                    upper=lower+region_size;
-                end
-                default: begin end
-            endcase
-            if (!found && cfg[4:3]!=0 && first_byte<upper && end_byte>lower) begin
-                found=1;
-                allow=allow && (first_byte>=lower && end_byte<=upper) &&
-                      (!cfg[7] || ((cfg[2:0] & access_type)==access_type));
-                if (first_byte>=lower && end_byte>upper) fault_address=upper[31:0];
-            end
-        end
+        fault_address=0;
+        for (j=0; j<16; j=j+1)
+            fault_address=fault_address | ({32{winner[j]}} & fault_candidates[j*32 +:32]);
+        if (!(|entry_matches)) fault_address=address;
     end
 endmodule

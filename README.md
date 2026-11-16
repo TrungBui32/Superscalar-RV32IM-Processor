@@ -206,6 +206,13 @@ entries bypass permissions in M-mode. Configuration/address locks, including a
 locked TOR entry's preceding address register, remain set until reset. This does
 not add U/S modes or an MMU. The data bus carries 32-bit physical addresses.
 
+`pmp_decode.v` computes region bounds once for the four instruction/data checks.
+The checkers compare entries in parallel and select the lowest-numbered match.
+NAPOT decoding uses a trailing-bit mask rather than a chain of conditional
+shifts. An all-ones NAPOT address covers the physical space; empty/reversed TOR
+ranges do not match. These changes preserve pipeline latency and do not add
+CSR-write cycles.
+
 Two native address triggers provide exact-address execute/load/store breakpoints
 before the matching instruction takes effect. `tselect`, `tdata1`, `tdata2`,
 `tinfo`, and `tcontrol` are implemented. The supported configuration is mcontrol
