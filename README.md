@@ -208,10 +208,20 @@ not add U/S modes or an MMU. The data bus carries 32-bit physical addresses.
 
 `pmp_decode.v` computes region bounds once for the four instruction/data checks.
 The checkers compare entries in parallel and select the lowest-numbered match.
-NAPOT decoding uses a trailing-bit mask rather than a chain of conditional
-shifts. An all-ones NAPOT address covers the physical space; empty/reversed TOR
-ranges do not match. These changes preserve pipeline latency and do not add
-CSR-write cycles.
+NAPOT bounds use shared bit-prefix logic rather than variable-size additions.
+Each checker compares the first 4-byte word with the region bounds; equality
+checks detect a boundary crossed by an RV32 byte/halfword/word access. The fault
+address selects an upper bound only for a partial high-end match. Unsupported
+access sizes fail closed. An all-ones NAPOT address covers the physical space;
+empty/reversed TOR ranges do not match. These changes preserve pipeline latency
+and do not add CSR-write cycles.
+
+The combinational PMP entry checks and region decoder have SAT proofs against
+byte-interval and arithmetic-bound references. Run them from the repository root:
+
+```bash
+yosys -Q -s formal/pmp.ys
+```
 
 Two native address triggers provide exact-address execute/load/store breakpoints
 before the matching instruction takes effect. `tselect`, `tdata1`, `tdata2`,
