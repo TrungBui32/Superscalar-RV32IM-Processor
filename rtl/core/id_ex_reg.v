@@ -5,6 +5,9 @@ module id_ex_reg
   input  wire        rst,
   input  wire        en,              // 0=hold (stall into EX)
   input  wire        flush,           // 1=bubble (zero control signals)
+  // Preserve bypassed operands if a consumer remains in EX after WB moves on.
+  input wire [31:0] rs1_forward_ex,
+  input wire [31:0] rs2_forward_ex,
 
   input wire  valid_id,
   output reg  valid_ex,
@@ -212,6 +215,9 @@ module id_ex_reg
       AluSrcB_ex   <= AluSrcB_id;
       AluOp_ex     <= AluOp_id;
       LwSizeSel_ex <= LwSizeSel_id;
+    end else begin
+      rs1_val_ex <= rs1_forward_ex;
+      rs2_val_ex <= rs2_forward_ex;
     end
   end
 endmodule

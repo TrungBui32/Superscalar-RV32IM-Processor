@@ -1514,7 +1514,8 @@ module core #(
    .clk(CLK),
    .rst(RESET),
    .en(ID_EX_en_pipe0),              // 0=hold (stall into EX)
-   .flush(ID_EX_flush_pipe0),           // 1=bubble (zero control signals)
+   .flush(ID_EX_flush_pipe0),
+        .rs1_forward_ex(Src_A_pipe0), .rs2_forward_ex(rs2_val_ex_forward_pipe0),           // 1=bubble (zero control signals)
    // From ID stage (data)
    .pc_id(pc_id_pipe0),
    .pcplus4_id(pcplus4_id_pipe0),
@@ -1600,7 +1601,8 @@ module core #(
    .clk(CLK),
    .rst(RESET),
    .en(ID_EX_en_pipe1),              // 0=hold (stall into EX)
-   .flush(ID_EX_flush_pipe1),           // 1=bubble (zero control signals)
+   .flush(ID_EX_flush_pipe1),
+        .rs1_forward_ex(Src_A_pipe1), .rs2_forward_ex(rs2_val_ex_forward_pipe1),           // 1=bubble (zero control signals)
    // From ID stage (data)
    .pc_id(pc_id_pipe1),
    .pcplus4_id(pcplus4_id_pipe1),
