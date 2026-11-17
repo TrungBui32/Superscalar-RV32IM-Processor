@@ -323,6 +323,14 @@ unchanged and is not used for these measurements.
 | CoreMark/MHz, RTL estimate | **2.439695** | **3.380731** |
 | Timed simulated seconds at 1 MHz | 16.395495 | 11.831760 |
 
+`-O1` and `-O2` are GCC optimization levels, not processor configurations.
+`-O1` performs basic optimization; `-O2` enables additional compiler
+optimizations. On the same RTL and benchmark inputs, `-O2` reduces timed cycles
+by **27.84%** and increases CoreMark/MHz by **38.57%** relative to `-O1`.
+This difference measures compiler-generated code efficiency; the processor RTL
+is identical in both runs. `-O1` matches the optimization level in the original
+CoreMark CMake build.
+
 Both standard seed sets pass: performance `0,0,0x66` and validation
 `0x3415,0x3415,0x66`. Each run uses 2000 bytes total for the three algorithms,
 one context, static allocation, no cache, and always-ready instruction/data
@@ -332,6 +340,17 @@ CRCs also match independent native execution of the same pristine kernels:
 performance `crcfinal=0x65c5`, validation `crcfinal=0xf006` after 40 iterations.
 Each target run exceeds ten simulated seconds at the explicit 1 MHz model
 clock. Simulator timestamps and the software timer use that same frequency.
+
+| Validation seeds, 40 iterations | GCC `-O1` | GCC `-O2` |
+|---|---:|---:|
+| Timed CPU cycles | 16,408,852 | 11,883,653 |
+| Standard CRC checks | PASS | PASS |
+| Final CRC versus native reference | PASS | PASS |
+
+The reported CoreMark/MHz score uses the performance seed set; the validation
+seed set checks correctness. Raw logs and machine-readable results are in
+`sim/build/coremark_verified/results_O1_40.json`, `results_O2_40.json`, and
+`comparison.json`.
 
 The cross compiler is `riscv64-unknown-elf-gcc` 10.2.0. All benchmark C files use
 the same flags, with `-O1` or `-O2` as indicated:
