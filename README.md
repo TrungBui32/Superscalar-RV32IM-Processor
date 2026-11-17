@@ -77,7 +77,79 @@ Run `bash scripts/test_muldiv.sh` with Icarus Verilog. It checks 370,720 arithme
 cases, including exhaustive 4-, 6-, and 8-bit operands, RV32 random and corner
 cases, changed request inputs, response backpressure, and reset. Twelve core
 runs cover both issue slots, dependent mixed operations, branch flushes, and
-instruction/data stalls. Build products go under the ignored `sim/build` tree.
+instruction/data stalls. Sixteen further cases inject a timer interrupt during
+multiply/divide execution or completion, with optional response stalls, and use
+both operations inside the handler before `mret`. Build products go under the
+ignored `sim/build` tree.
+
+
+### Mul/div measurements (2026-11-17)
+
+Compared with `b3030eb`, `efd8404` reduces accepted-request-to-result latency
+from 9 to 2 cycles for multiplication and from 9 to 1 for the special division
+cases above. General division remains 9 cycles. At a 20 ns clock, the multiply
+latency after acceptance is 40 ns instead of 180 ns; acceptance and downstream
+stall cycles are excluded from this number.
+
+| Directed core program | Previous cycles | New cycles |
+| --- | ---: | ---: |
+| MUL followed by a dependent ADDI | 20 | 13 |
+| Same program, two-cycle completion stall | 31 | 15 |
+| Fourteen dependent/mixed MUL/DIV/REM operations | 164 | 106 |
+| Upstream `rv32um-p-mul`, no external stalls | 1,059 | 702 |
+| Upstream `rv32um-p-mulh`, no external stalls | 1,043 | 700 |
+
+All 344 ISA/directed runs across four stall seeds, two PMA runs, 97 CSR-suite
+checks, and 28 existing interrupt combinations pass with the new RTL, in addition
+to `scripts/test_muldiv.sh`. Yosys reports no structural problems or inferred
+latches. Verilator reports no new mul/div warning; existing warnings elsewhere
+in the core remain.
+
+An isolated RV32 mul/div wrapper was synthesized and routed in Vivado 2023.2 on
+`xc7a100tcsg324-1`, with a 20 ns clock and 0.1 ns user uncertainty, using default
+`opt_design`, `place_design`, `phys_opt_design`, and `route_design` directives:
+
+| Isolated unit, post-route | Previous | New |
+| --- | ---: | ---: |
+| LUTs | 2,316 | 621 |
+| Flip-flops | 615 | 237 |
+| DSP48E1 | 0 | 4 |
+| Setup WNS | +6.361 ns | +6.077 ns |
+| Hold WHS | +0.105 ns | +0.039 ns |
+
+Both versions pass internal setup and hold timing at 50 MHz; external I/O delays
+are unconstrained. The new isolated unit's worst path is in the four-step
+divider. These unit measurements do not establish full-core or SoC timing.
+Local before/after checkpoints, source snapshots, and reports are under the
+ignored `sim/build/muldiv_compare/{baseline,optimized}/` directories. Functional
+logs and ISA cycle comparisons are in `sim/build/muldiv_optimized/`.
+
+
+The same core-only OOC flow and constraints used for `1a97d9b` also completed
+on the new RTL, including routing all 19,913 routable nets with zero errors:
+
+| Whole core, post-route | Before (`1a97d9b`) | DSP mul/div (`efd8404`) |
+| --- | ---: | ---: |
+| LUTs | 19,058 | 18,324 |
+| Flip-flops | 7,639 | 7,278 |
+| DSP48E1 | 0 | 4 |
+| Setup WNS | +0.021 ns | +0.324 ns |
+| Hold WHS | +0.038 ns | +0.039 ns |
+| Critical datapath delay | 19.541 ns | 19.338 ns |
+
+The core passes setup, hold, and pulse-width timing at 50 MHz. The integrated
+mul/div instance uses 434 LUTs, 237 FFs, and four DSPs after routing. The critical
+path now starts at `pmp_regions/upper_last_words_reg[37]` and ends at
+`id_ex_reg1/csr_rdata_ex_reg[15]`; it is outside the multiplier. No timing
+exceptions were added. DRC reports no errors, with DSP pipeline advisories and
+OOC configuration-voltage/unloaded-port warnings remaining. The two-cycle
+multiply meets timing without adding the extra DSP stages suggested by those
+advisories.
+
+Core reports, source snapshots, the flow script, and checkpoints are in
+`sim/build/vivado_core_muldiv/`. These are internal core timing results with
+external I/O unconstrained. **The full SoC has not been rerouted for this change**;
+the older SoC timing results below do not describe the DSP-based RTL.
 
 ### Data Forwarding
 

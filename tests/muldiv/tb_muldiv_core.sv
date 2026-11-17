@@ -80,7 +80,7 @@ end
 // Stall exactly across completion: the held EX request must never replay.
 initial begin
  wait(!rst);
- if(stall==1)begin wait(dut.muldiv_unit1.state == dut.muldiv_unit1.DONE);@(negedge clk);dr=0;repeat(2)@(negedge clk);dr=1;end
+ if(stall==1)begin wait(accepts==1);wait(!dut.MCycle_Busy);@(negedge clk);dr=0;repeat(2)@(negedge clk);dr=1;end
 end
 always @(negedge clk) if(!rst && stall==2)begin
  random_state={random_state[30:0],random_state[31]^random_state[21]^random_state[1]^random_state[0]};
