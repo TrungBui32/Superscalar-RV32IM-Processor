@@ -4,7 +4,7 @@ A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC
 
 **Historical board result:** ~50 MHz (original Artix-7 implementation). Timing tables below identify earlier RTL snapshots; the new RV32A integration has not been placed or routed.
 
-**CoreMark, current RTL simulation:** **2.4397 CoreMark/MHz (`-O1`)** or **3.3807 (`-O2`)**, GCC 10.2.0, ideal zero-wait BRAM model. See the reproducible run below; this is not a measured board score.
+**CoreMark, current RTL simulation:** **2.4397 CoreMark/MHz (`-O1`)**, **3.3807 (`-O2`)**, or **3.4640 (`-O3`)**, GCC 10.2.0, ideal zero-wait BRAM model. See the reproducible run below; this is not a measured board score.
 
 ---
 
@@ -316,20 +316,26 @@ used. Only the platform header, startup, timing, and UART port are supplied by
 this repository. The original COE-oriented port in `sw/coremark/` remains
 unchanged and is not used for these measurements.
 
-| Performance seeds, 40 iterations | GCC `-O1` | GCC `-O2` |
-|---|---:|---:|
-| Timed CPU cycles | 16,395,495 | 11,831,760 |
-| Cycles per iteration | 409,887.375 | 295,794.000 |
-| CoreMark/MHz, RTL estimate | **2.439695** | **3.380731** |
-| Timed simulated seconds at 1 MHz | 16.395495 | 11.831760 |
+| Performance seeds, 40 iterations | GCC `-O1` | GCC `-O2` | GCC `-O3` |
+|---|---:|---:|---:|
+| Timed CPU cycles | 16,395,495 | 11,831,760 | 11,547,431 |
+| Cycles per iteration | 409,887.375 | 295,794.000 | 288,685.775 |
+| CoreMark/MHz, RTL estimate | **2.439695** | **3.380731** | **3.463974** |
+| Timed simulated seconds at 1 MHz | 16.395495 | 11.831760 | 11.547431 |
+| Instruction image bytes (`.text`) | 11,008 | 11,592 | 18,080 |
 
-`-O1` and `-O2` are GCC optimization levels, not processor configurations.
+`-O1`, `-O2`, and `-O3` are GCC optimization levels, not processor configurations.
 `-O1` performs basic optimization; `-O2` enables additional compiler
 optimizations. On the same RTL and benchmark inputs, `-O2` reduces timed cycles
 by **27.84%** and increases CoreMark/MHz by **38.57%** relative to `-O1`.
 This difference measures compiler-generated code efficiency; the processor RTL
-is identical in both runs. `-O1` matches the optimization level in the original
+is identical at all three optimization levels. `-O1` matches the optimization level in the original
 CoreMark CMake build.
+`-O3` enables more aggressive compiler optimization. Relative to `-O2`, this
+run reduces timed cycles by **2.40%** and increases throughput by **2.46%**,
+while increasing the instruction image by **55.97%** (11,592 to 18,080 bytes).
+All three instruction images fit the same 32 KiB IMEM; the data RAM size and
+benchmark inputs are unchanged.
 
 Both standard seed sets pass: performance `0,0,0x66` and validation
 `0x3415,0x3415,0x66`. Each run uses 2000 bytes total for the three algorithms,
@@ -341,19 +347,19 @@ performance `crcfinal=0x65c5`, validation `crcfinal=0xf006` after 40 iterations.
 Each target run exceeds ten simulated seconds at the explicit 1 MHz model
 clock. Simulator timestamps and the software timer use that same frequency.
 
-| Validation seeds, 40 iterations | GCC `-O1` | GCC `-O2` |
-|---|---:|---:|
-| Timed CPU cycles | 16,408,852 | 11,883,653 |
-| Standard CRC checks | PASS | PASS |
-| Final CRC versus native reference | PASS | PASS |
+| Validation seeds, 40 iterations | GCC `-O1` | GCC `-O2` | GCC `-O3` |
+|---|---:|---:|---:|
+| Timed CPU cycles | 16,408,852 | 11,883,653 | 11,581,709 |
+| Standard CRC checks | PASS | PASS | PASS |
+| Final CRC versus native reference | PASS | PASS | PASS |
 
 The reported CoreMark/MHz score uses the performance seed set; the validation
 seed set checks correctness. Raw logs and machine-readable results are in
-`sim/build/coremark_verified/results_O1_40.json`, `results_O2_40.json`, and
-`comparison.json`.
+`sim/build/coremark_verified/results_O1_40.json`, `results_O2_40.json`,
+`results_O3_40.json`, and `comparison.json`.
 
 The cross compiler is `riscv64-unknown-elf-gcc` 10.2.0. All benchmark C files use
-the same flags, with `-O1` or `-O2` as indicated:
+the same flags, with `-O1`, `-O2`, or `-O3` as indicated:
 
 ```text
 -march=rv32ima -mabi=ilp32 -mcmodel=medany -msmall-data-limit=0
@@ -381,6 +387,9 @@ python3 scripts/run_coremark.py --coremark /path/to/coremark \
 python3 scripts/run_coremark.py --coremark /path/to/coremark \
   --rev 1f483d5b8316753a742cbf5590caf5bd0a4e4777 \
   --iterations 40 --hz 1000000 --opt O1
+python3 scripts/run_coremark.py --coremark /path/to/coremark \
+  --rev 1f483d5b8316753a742cbf5590caf5bd0a4e4777 \
+  --iterations 40 --hz 1000000 --opt O3
 ```
 
 The script builds both seed sets, validates standard CRCs and native-reference
