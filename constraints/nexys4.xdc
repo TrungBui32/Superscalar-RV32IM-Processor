@@ -9,7 +9,8 @@ set_property PACKAGE_PIN E3 [get_ports CLK_undiv]
 set_property IOSTANDARD LVCMOS33 [get_ports CLK_undiv]
 create_clock -period 10.000 -name sys_clk_pin -waveform {0.000 5.000} -add [get_ports CLK_undiv]
 
-set_max_delay 20 -from [all_clocks] -to [all_clocks] -datapath_only
+# Keep the clock wizard's real 50/100 MHz setup and hold relationships.
+# A blanket 20 ns max-delay would relax paths that must meet 10 ns or less.
 
 
 ## Switches
