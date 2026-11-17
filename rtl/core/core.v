@@ -1051,6 +1051,11 @@ module core #(
     assign MCycle_start = MCycle_ex_pipe0 || MCycle_ex_pipe1; // Start signal for multi-cycle operations
     wire is_mulsu_ex;
     assign is_mulsu_ex = (MCycle_ex_pipe0 && funct3_ex_pipe0 == Funct3_mulsu) || (MCycle_ex_pipe1 && funct3_ex_pipe1 == Funct3_mulsu);
+    // Keep the completed result until its EX instruction advances or is flushed.
+    // ResultReady is only sampled in DONE, so it cannot affect Busy combinationally.
+    wire MCycle_result_ready =
+        (MCycle_ex_pipe0 && (EX_MEM_en_pipe0 || EX_MEM_flush_pipe0)) ||
+        (MCycle_ex_pipe1 && (EX_MEM_en_pipe1 || EX_MEM_flush_pipe1));
     wire MCycle_Busy; // MCycle busy signal
     reg [1:0]  MCycleOp_ex;
     wire [63:0] MCycle_out_ex;
@@ -1574,7 +1579,8 @@ module core #(
                     .Operand2(Src_B_MCycle),
                     .Result1(MCycle_out_ex[31:0]), // LSW of Product / Quotient
                     .Result2(MCycle_out_ex[63:32]), // MSW of Product / Remainder - not needed in RV32I
-                    .Busy(MCycle_Busy)
+                    .Busy(MCycle_Busy),
+                    .ResultReady(MCycle_result_ready)
                 );                
     
     // Instantiate ProgramCounter    

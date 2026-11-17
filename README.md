@@ -50,11 +50,34 @@ Gshare-style predictor with:
 
 ### Multiply / Divide Unit
 
-Multi-cycle, non-pipelined unit with 8-cycle latency:
-- Multiply: Radix-16 Booth's algorithm
-- Divide: iterative long-division with loop unrolling
+One outstanding operation, with a DSP-backed multiply datapath and a separate
+iterative divider. Latencies below count clock edges **after request acceptance**
+until `Busy` deasserts; result consumption can be delayed by an external stall.
 
-The hazard controller stalls the pipeline when a mul/div is in-flight.
+| RV32 operation | Latency |
+| --- | ---: |
+| MUL / MULH / MULHU / MULHSU | 2 cycles |
+| DIV / DIVU / REM / REMU, general case | 9 cycles |
+| Division by zero, dividend zero, or divisor magnitude one | 1 cycle |
+
+The multiplier registers extended operands, a signed product, and the result.
+Vivado maps its 33-by-33-bit multiplication to four DSP48E1 blocks on Artix-7.
+The divider executes four non-restoring binary steps per cycle and retains a
+separate cycle for restoring the remainder and applying signs. Divide-by-zero
+and signed-overflow results follow RV32M semantics.
+
+The hazard controller stalls the pipeline while the operation computes. All
+request data is captured at acceptance; the result stays stable until EX
+advances or flushes the owning instruction through `ResultReady`. Holding the
+request high during a memory stall cannot restart an already completed operation.
+This interface supports one outstanding operation; the core does not issue a
+new multiplication every cycle.
+
+Run `bash scripts/test_muldiv.sh` with Icarus Verilog. It checks 370,720 arithmetic
+cases, including exhaustive 4-, 6-, and 8-bit operands, RV32 random and corner
+cases, changed request inputs, response backpressure, and reset. Twelve core
+runs cover both issue slots, dependent mixed operations, branch flushes, and
+instruction/data stalls. Build products go under the ignored `sim/build` tree.
 
 ### Data Forwarding
 
@@ -93,7 +116,7 @@ rv32im-processor/
 │   │   ├── decode_unit.v   ← instruction decoder
 │   │   ├── alu.v           ← arithmetic-logic unit
 │   │   ├── barrel_shifter.v
-│   │   ├── muldiv_unit.v   ← Booth mul + iterative div
+│   │   ├── muldiv_unit.v   ← DSP multiply + iterative divide
 │   │   ├── reg_file.v      ← 32×32-bit register file
 │   │   ├── pc_reg.v        ← program counter register
 │   │   ├── next_pc.v       ← next-PC computation
@@ -463,4 +486,4 @@ this connected RTL; it does not establish firmware or board functionality.
 - **Dual-issue with in-order commit** keeps implementation complexity low while doubling theoretical IPC on instruction-level-parallel code.
 - **BRAM at 2× core frequency** gives single-cycle IMEM/DMEM latency without an instruction cache, which simplifies hazard handling significantly.
 - **Gshare branch predictor** reduces branch-misprediction penalties (4-cycle flush) to a few percent overhead on typical workloads.
-- **Radix-16 Booth multiply** completes in 8 cycles, avoiding a 32-cycle naive approach while staying within a single pipeline slot.
+- **DSP-backed multiply** produces a result two cycles after request acceptance, while the separate divider retains four binary steps per cycle.
