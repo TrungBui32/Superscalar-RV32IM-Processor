@@ -1,0 +1,5 @@
+# Run from the repository root: yosys -Q -s formal/memory_address.ys
+read_verilog rtl/core/decode_unit.v rtl/core/alu.v rtl/core/barrel_shifter.v formal/memory_address.v
+prep -top memory_address_equivalence -flatten
+opt -full
+sat -verify -prove equivalent 1 -timeout 60

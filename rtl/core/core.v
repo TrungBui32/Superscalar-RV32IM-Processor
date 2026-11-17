@@ -748,13 +748,13 @@ module core #(
     wire [127:0] pmp_config;
     wire [511:0] pmp_address;
     wire [15:0] pmp_active_entries;
-    wire [559:0] pmp_lower_bounds, pmp_upper_bounds;
+    wire [543:0] pmp_lower_last_words, pmp_upper_last_words;
     wire [127:0] pmp_check_config;
     pmp_region_cache pmp_regions(.clk(CLK),.rst(RESET),
         .update_accepted(pmp_update_accepted),.refresh_pending(pmp_cache_pending),
         .config_bytes(pmp_config),.addresses(pmp_address),.cached_config(pmp_check_config),
         .active_entries(pmp_active_entries),
-        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds));
+        .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words));
     function is_pmp_csr;
         input [11:0] addr;
         begin is_pmp_csr=addr[11:2]==10'h0e8 || addr[11:4]==8'h3b; end
@@ -765,23 +765,23 @@ module core #(
     wire [31:0] pmp_badaddr0, pmp_badaddr1;
     pmp_check pmp_fetch0(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
-        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
+        .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(pc_mem_pipe0), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[0]), .fault_address());
     pmp_check pmp_data0(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
-        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
+        .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
         .access_type(MemRead_mem_pipe0 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
     pmp_check pmp_fetch1(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
-        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
+        .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(pc_mem_pipe1), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[1]), .fault_address());
     pmp_check pmp_data1(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
-        .lower_bounds(pmp_lower_bounds),.upper_bounds(pmp_upper_bounds),
+        .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
         .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
         .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));
@@ -987,7 +987,11 @@ module core #(
     assign fencei_fire = pipeline_can_advance &&
         ((valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f && instruction_mem_pipe0[14:12] == 1) ||
          (valid_mem_pipe1 && instruction_mem_pipe1[6:0] == 7'h0f && instruction_mem_pipe1[14:12] == 1));
-    assign irq_fire = pipeline_can_advance && !pmp_cache_pending && irq_pending && !csr_older_pending && !wb_pending;
+    // Interrupt entry requires empty EX/MEM stages. In that state there can
+    // be no live split access or PMP refresh stall, so use external readiness
+    // directly rather than routing permission-dependent MEM stalls through
+    // interrupt selection and the vectored trap address adder.
+    assign irq_fire = memory_byte_step && irq_pending && !csr_older_pending && !wb_pending;
     assign csr_trap_fire = pipeline_can_advance && (csr_trap_pipe0 || csr_trap_pipe1 || irq_fire);
     assign csr_trap_pc = irq_fire ? (valid_id_pipe0 ? pc_id_pipe0 : valid_id_pipe1 ? pc_id_pipe1 : PC) :
                          csr_trap_pipe0 ? pc_mem_pipe0 : pc_mem_pipe1;
@@ -1255,6 +1259,10 @@ module core #(
     end
 
 
+    // Memory hazards need only the load/store address sum. Keep the shifter,
+    // CSR/link-result muxes and general ALU operation selection off this path.
+    wire [31:0] hazard_addr_ex_pipe0=Src_A_pipe0+Src_B_pipe0;
+    wire [31:0] hazard_addr_ex_pipe1=Src_A_pipe1+Src_B_pipe1;
     assign alu_out_ex_pipe0 = csr_rvalid_ex_pipe0 ? csr_rdata_ex_pipe0 : (is_jal_ex_pipe0 || is_jalr_ex_pipe0) ? pcplus4_ex_pipe0 : ALUResult_ex_pipe0;
     assign alu_out_ex_pipe1 = csr_rvalid_ex_pipe1 ? csr_rdata_ex_pipe1 : (is_jal_ex_pipe1 || is_jalr_ex_pipe1) ? pcplus4_ex_pipe1 : ALUResult_ex_pipe1;
 
@@ -2101,13 +2109,13 @@ module core #(
     .ex_is_load_pipe0(MemToReg_ex_pipe0),
     .ex_RegWrite_pipe0(RegWrite_ex_pipe0),
     .ex_rd_id_pipe0(rd_idx_ex_pipe0),
-    .ex_addr_pipe0(alu_out_ex_pipe0),
+    .ex_addr_pipe0(hazard_addr_ex_pipe0),
     .ex_is_store_pipe0(ex_is_store_pipe0),
 
     .ex_is_load_pipe1(MemRead_ex_pipe1),
     .ex_RegWrite_pipe1(RegWrite_ex_pipe1),
     .ex_rd_id_pipe1(rd_idx_ex_pipe1),
-    .ex_addr_pipe1(alu_out_ex_pipe1),
+    .ex_addr_pipe1(hazard_addr_ex_pipe1),
     .ex_is_store_pipe1(ex_is_store_pipe1),
 
 

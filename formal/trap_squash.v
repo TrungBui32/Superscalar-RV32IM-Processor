@@ -146,3 +146,23 @@ module trap_squash_property(
         !MEM_WB_en_pipe0 && !MEM_WB_en_pipe1;
     assign equivalent=!(fault0 || fault1) || (advancing ? killed : held);
 endmodule
+
+// Interrupts drain EX/MEM first. Each split-access request implies its MEM
+// validity; refresh blocks only live MEM work. Prove that these internal stalls
+// cannot alter interrupt acceptance once that empty-pipeline condition holds.
+module irq_readiness_property(
+    input external_ready, refresh_pending, irq_pending, wb_pending,
+    input ex0, ex1, mem0, mem1,
+    input split_request0, split_request1, split_done0, split_done1,
+    output equivalent
+);
+    wire busy0=mem0 && split_request0 && !split_done0;
+    wire busy1=mem1 && split_request1 && !split_done1;
+    wire refresh_block=refresh_pending && (mem0 || mem1);
+    wire older_pending=ex0 || ex1 || mem0 || mem1;
+    wire original=external_ready && !busy0 && !busy1 && !refresh_block &&
+        !refresh_pending && irq_pending && !older_pending && !wb_pending;
+    wire optimized=external_ready && !refresh_pending && irq_pending &&
+        !older_pending && !wb_pending;
+    assign equivalent=original==optimized;
+endmodule

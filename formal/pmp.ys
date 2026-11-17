@@ -5,6 +5,13 @@ opt -full
 sat -verify -prove equivalent 1 -timeout 60
 
 design -reset
+read_verilog rtl/core/pmp_check.v formal/pmp_properties.v
+expose -input pmp_check/entry_matches pmp_check/permissions pmp_check/high_faults
+prep -top pmp_priority_equivalence -flatten
+opt -full
+sat -verify -prove equivalent 1 -timeout 60
+
+design -reset
 read_verilog rtl/core/pmp_check.v rtl/core/pmp_decode.v formal/pmp_properties.v
 prep -top pmp_decode_equivalence -flatten
 opt -full

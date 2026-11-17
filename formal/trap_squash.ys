@@ -3,3 +3,9 @@ read_verilog rtl/core/hazard_ctrl.v formal/trap_squash.v
 prep -top trap_squash_property -flatten
 opt -full
 sat -verify -prove equivalent 1 -timeout 60
+
+design -reset
+read_verilog formal/trap_squash.v
+prep -top irq_readiness_property -flatten
+opt -full
+sat -verify -prove equivalent 1 -timeout 60
