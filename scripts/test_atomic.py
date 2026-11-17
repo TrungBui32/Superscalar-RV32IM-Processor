@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -12,6 +13,7 @@ os.chdir(ROOT)
 a = argparse.ArgumentParser(description=__doc__)
 a.add_argument('--riscv-tests', type=Path)
 a.add_argument('--riscv-env', type=Path, help='Directory containing riscv_test.h and link.ld')
+a.add_argument('--latency', action='store_true', help='Measure no-stall atomic request/response and MEM occupancy cycles')
 a.add_argument('--build', type=Path, default=Path('sim/build/atomic_tests'))
 args = a.parse_args()
 args.build.mkdir(parents=True, exist_ok=True)
@@ -66,12 +68,17 @@ for name, source, linker, includes in programs:
 def run(item):
     name, image, tohost, seed, inject = item
     r = subprocess.run(['vvp', str(args.build/'tb_atomic_core'), f'+mem={image}',
-                        f'+tohost={tohost}', f'+seed={seed}', f'+inject={inject}'],
+                        f'+tohost={tohost}', f'+seed={seed}', f'+inject={inject}',
+                        *(['+latency'] if args.latency and seed==0 and inject==0 else [])],
                        text=True, capture_output=True, timeout=150)
     log = r.stdout+r.stderr
     (args.build/f'{name}.{seed}.{inject}.log').write_text(log)
     line = next((x for x in log.splitlines() if x.startswith(('PASS', 'FATAL', 'FAIL'))), log[-500:])
     result = dict(name=name, seed=seed, inject=inject, passed=r.returncode == 0 and line.startswith('PASS'), detail=line)
+    if args.latency and seed==0 and inject==0:
+        result['latencies'] = [dict(op=int(m[1]), result=int(m[2],16), pipe=int(m[3]),
+                                    response_cycles=int(m[4]), consume_cycles=int(m[5]), mem_cycles=int(m[6]))
+                               for m in re.finditer(r'LATENCY op=(\d+) result=([0-9a-f]+) pipe=(\d+) response_cycles=(\d+) consume_cycles=(\d+) mem_cycles=(\d+)', log)]
     print(name, seed, inject, line, flush=True)
     return result
 
@@ -80,4 +87,19 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
 (args.build/'results.json').write_text(json.dumps(results, indent=2)+'\n')
 if not all(r['passed'] for r in results):
     raise SystemExit('Atomic regression failed; see results.json and per-run logs')
+if args.latency:
+    groups = {}
+    for run_result in results:
+        for sample in run_result.get('latencies', []):
+            label = ('lr' if sample['op']==2 else
+                     'sc_success' if sample['op']==3 and sample['result']==0 else
+                     'sc_failure' if sample['op']==3 else f"amo_{sample['op']:02x}")
+            group = groups.setdefault(label, [])
+            group.append(sample)
+    summary = {name: dict(samples=len(values), pipes=sorted({v['pipe'] for v in values}),
+                         **{metric: dict(min=min(v[metric] for v in values), max=max(v[metric] for v in values))
+                            for metric in ['response_cycles', 'consume_cycles', 'mem_cycles']})
+               for name, values in groups.items()}
+    (args.build/'latency_summary.json').write_text(json.dumps(summary, indent=2)+'\n')
+    print('Atomic latency:', json.dumps(summary, sort_keys=True), flush=True)
 print(f'PASS atomic architectural runs={len(results)}', flush=True)

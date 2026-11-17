@@ -78,6 +78,36 @@ module tb_atomic_core;
                 mem[(((addr1+lane)-BASE)&32'h3ffff)>>2][((addr1+lane)&3)*8+:8]<=wdata1[lane*8+:8];
         end
     end
+    // Optional latency probe. Count full clock intervals after request
+    // acceptance, observe rsp_valid after NBA updates, then record consumption.
+    integer latency_ticks=0, latency_start=0, latency_response=0, latency_mem_start=0;
+    reg latency_active=0, latency_mem_active=0, latency_seen=0;
+    reg [4:0] latency_op;
+    reg [31:0] latency_result;
+    reg latency_owner;
+    always @(posedge clk) if(!rst && $test$plusargs("latency"))begin
+        latency_ticks++;
+        if(dut.atomic_inst.request_fire)begin
+            latency_start=latency_ticks;latency_op=dut.atomic_inst.req_funct5;
+            latency_owner=dut.atomic_owner1;latency_active=1;latency_seen=0;
+        end
+        if(latency_active && dut.atomic_rsp_valid && dut.atomic_rsp_ready)begin
+            if(!latency_seen)$fatal(1,"latency response was not observed");
+            $display("LATENCY op=%0d result=%h pipe=%0d response_cycles=%0d consume_cycles=%0d mem_cycles=%0d",
+                latency_op,latency_result,latency_owner,latency_response-latency_start,
+                latency_ticks-latency_start,latency_ticks-latency_mem_start);
+            latency_active=0;latency_mem_active=0;
+        end
+    end
+    always @(negedge clk) if(!rst && $test$plusargs("latency"))begin
+        if(!latency_mem_active && dut.atomic_present)begin
+            latency_mem_start=latency_ticks;latency_mem_active=1;
+        end
+        if(!dut.atomic_present && !latency_active)latency_mem_active=0;
+        if(latency_active && !latency_seen && dut.atomic_rsp_valid)begin
+            latency_response=latency_ticks;latency_result=dut.atomic_result;latency_seen=1;
+        end
+    end
     initial begin
         for(i=0;i<65536;i++)mem[i]=0;
         if(!$value$plusargs("mem=%s",image))$fatal(1,"missing image");

@@ -231,6 +231,43 @@ zero structural problems and no inferred latches; Verilator has no new atomic
 warning or combinational-loop warning. Physical resource/timing measurements
 above and below predate this RV32A change; no new timing-closure claim is made.
 
+
+### Atomic latency with the current memory adapter
+
+Measured with instruction/data ready asserted, no interrupt injection, and the
+current adapter acknowledging an accepted memory beat on the following core
+cycle. The request edge is `req_valid && req_ready`; response latency counts
+full clock intervals from that edge until `rsp_valid` is asserted.
+
+| RV32A operation | Request to response valid | Request to response consumption | Total MEM-stage occupancy |
+|---|---:|---:|---:|
+| LR.W | 3 cycles | 4 cycles | 5 cycles |
+| SC.W, success | 3 cycles | 4 cycles | 5 cycles |
+| SC.W, reservation failure | 1 cycle | 2 cycles | 3 cycles |
+| All nine AMO.W operations | 5 cycles | 6 cycles | 7 cycles |
+
+MEM occupancy starts when the instruction enters MEM and ends when it advances
+to WB. These figures exclude waiting in ID for older work to drain, and exclude
+external stalls. A held response or a busy bus can increase latency. Alignment,
+PMP, PMA, and encoding faults are checked before dispatch, so such instructions
+do not contribute samples to the atomic engine's latency table. Architectural
+cycle counts are distinct from the physical critical-path delay reported by
+static timing analysis; no board-frequency claim follows from this table.
+
+The latency probe observed 2,099 completed no-stall transactions across both
+issue slots, covering every atomic operation, with identical minimum/maximum
+latencies for each category. All 68 architectural runs, the 2,048 decode cases,
+and 4,635 atomic-unit cases still pass with the probe enabled. Reproduce with:
+
+```bash
+python3 scripts/test_atomic.py --latency --riscv-tests /path/to/riscv-tests
+```
+
+Use `--riscv-env` if the physical test environment is in a separate checkout.
+No-stall samples and `latency_summary.json` are written to the selected build
+directory. The measurement used `sim/build/atomic_latency/`; its full log is
+also preserved in `sim/build/vivado_soc_rv32a/atomic_latency.log`.
+
 ### Data Forwarding
 
 11 bypass paths handled by `forward_ctrl`, covering:
