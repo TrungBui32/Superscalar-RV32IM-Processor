@@ -729,4 +729,11 @@ set_property IOSTANDARD LVCMOS33 [get_ports TX]
 set_property CFGBVS VCCO [current_design]
 	set_property CONFIG_VOLTAGE 3.3 [current_design]
 
-set_max_delay -from [get_pins RX_MSF1_reg/C] -to [get_pins RX_MSF2_reg/D] 4.000
+# The current SoC can prune unused UART RX logic. Constrain the synchronizer
+# only when both stages survive synthesis; do not constrain unrelated paths.
+set rx_sync_from [get_pins -quiet RX_MSF1_reg/C]
+set rx_sync_to [get_pins -quiet RX_MSF2_reg/D]
+if {[llength $rx_sync_from] && [llength $rx_sync_to]} {
+    set_max_delay -from $rx_sync_from -to $rx_sync_to 4.000
+}
+unset rx_sync_from rx_sync_to
