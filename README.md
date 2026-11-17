@@ -366,8 +366,8 @@ forwarding, pipeline hazards, randomized architectural scoreboards, trap/MRET,
 interrupt masking/priority/vectoring/retriggering, counter behavior, and actual
 CPU + MMIO timer/software interrupt handlers. They do not certify ISA compliance
 or FPGA timing. U/S-mode, MMU, external bus access-fault inputs, and a device interrupt
-controller are not implemented. Vivado-generated BRAM/clock IP remains required
-for the complete board wrapper.
+controller are not implemented. The complete board wrapper uses generated
+BRAM/clock/counter IP; the full-SoC build script below recreates these IPs.
 
 ---
 
@@ -385,7 +385,44 @@ vivado -mode tcl -source run_sim.tcl
 
 ## Synthesis & Implementation
 
-Open Vivado 2019.2, create a new project targeting `xc7a100tcsg324-1` (Nexys 4) or `xc7a100tdcsg324-1` (Nexys 4 DDR), add all files under `rtl/` and `constraints/nexys4.xdc`, set `rtl/soc/fpga_top.vhd` as the top module, and run the standard implementation flow.
+With Vivado 2023.2 on `PATH`, run from the repository root:
+
+```bash
+vivado -mode batch -source scripts/implement_soc.tcl
+```
+
+The script builds `fpga_top` on `xc7a100tcsg324-1`, including the mixed
+Verilog/VHDL board wrapper, core, memories, timer, UART, OLED, and accelerometer
+logic that remains connected after optimization. It recreates the missing IPs:
+
+| IP | Configuration |
+|---|---|
+| `clk_wiz_0` | 100 MHz input, 50 MHz core, 100 MHz BRAM; both outputs at 0 degrees |
+| `blk_mem_gen_0` | True dual-port 8192 x 32-bit memory (32 KiB), initialized from `mem/IMEM.coe` |
+| `blk_mem_gen_1` | True dual-port 4096 x 32-bit memory (16 KiB), 8-bit write lanes, initialized from `mem/DMEM.coe` |
+| `c_counter_binary_0` | 32-bit incrementing counter with synchronous clear |
+
+Both BRAM read ports have one cycle of latency at the BRAM clock; there are no
+additional output registers. Unspecified image locations are initialized to
+zero. These configurations are reconstructed from the RTL port widths and
+connections; the original `.xci` files are absent. Some older RTL comments
+describe different frequencies or capacities.
+
+Sources, memory images, generated project/IPs, checkpoints, and reports are
+saved under `sim/build/vivado_soc/` (ignored by Git). Optional arguments select
+another output directory and the existing `nexys4_ddr` pin file:
+
+```bash
+vivado -mode batch -source scripts/implement_soc.tcl -tclargs sim/build/vivado_soc_ddr nexys4_ddr
+```
+
+This is a normal full-device implementation, with real MMCM-generated clock
+relationships and 0.1 ns user clock uncertainty. The old blanket 20 ns
+clock-to-clock max-delay is removed; core/BRAM and peripheral crossings must
+meet their actual edge relationships. External I/O delay budgets are not
+specified, so internal timing results alone do not constitute complete board
+interface signoff. The build ends with a routed checkpoint and timing,
+utilization, clock-interaction, exception, and DRC reports.
 
 ---
 
