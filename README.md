@@ -211,14 +211,23 @@ not add U/S modes or an MMU. The data bus carries 32-bit physical addresses.
 The checkers compare entries in parallel and select the lowest-numbered match.
 NAPOT bounds use shared bit-prefix logic rather than variable-size additions.
 Each checker compares the first 4-byte word with the region bounds; equality
-checks detect a boundary crossed by an RV32 byte/halfword/word access. The fault
-address selects an upper bound only for a partial high-end match. Unsupported
+checks detect a boundary crossed by an RV32 byte/halfword/word access. Permission
+is denied only when the winning entry denies access, so a miss needs no separate
+wide reduction in the allow path. The fault address selects an upper bound only
+for a partial high-end match. Unsupported
 access sizes fail closed. An all-ones NAPOT address covers the physical space;
 empty/reversed TOR ranges do not match. These changes preserve pipeline latency
 and do not add CSR-write cycles.
 
 `pmp_region_cache.v` registers decoded bounds, active bits, and permissions
 together, removing raw CSR decoding from the permission-check feedback path.
+Bounds are cached as signed `(byte_boundary >> 2) - 1` values. A zero boundary
+therefore becomes -1. Comparing the current word against this cached value
+handles both containment and crossing into the next word without an address
+incrementer on the allow path. A partial high-end match implies that the upper
+boundary is the next word. Its address is computed directly from the access
+address in parallel with permission checks, avoiding a wide boundary mux and
+a late incrementer on the fault-address path.
 An accepted PMP CSR write marks the following cycle as refresh pending. Live
 MEM work is held and memory accesses/interrupt entry are suppressed until the
 cache catches up. The existing control-CSR serialization normally supplies
@@ -227,7 +236,10 @@ CSR readback still uses the original CSR bank. All 16 entries, address modes,
 locking rules, and partial-access faults remain supported.
 
 The combinational PMP entry checks and region decoder have SAT proofs against
-byte-interval and arithmetic-bound references. A sequential proof checks cache
+byte-interval and arithmetic-bound references. A compositional proof cuts the
+per-entry results and checks all 16 entries' priority and fault-address selection
+against a procedural first-match reference, using the high-end fault predicate's
+boundary relation. A sequential proof checks cache
 coherence outside refresh and completion of a blocked refresh after one edge,
 assuming raw state changes only on accepted writes and those writes stop while
 live MEM work is blocked. Run them from the repository root:
@@ -280,33 +292,59 @@ values in invalid bubbles are unspecified. Real stalls preserve live payloads,
 including EX operand refresh from forwarding. This reduces the load on flush
 nets while preserving all valid instruction data and precise traps.
 
+Interrupt acceptance requires empty EX/MEM stages, which also rules out live
+split accesses and PMP refresh stalls. It uses external bus/clock/multicycle
+readiness directly, retaining the explicit refresh guard. This removes a
+permission-dependent MEM stall path into interrupt selection and the vectored
+trap-address adder without changing the cycle in which an interrupt is accepted.
+The trap proof also checks this readiness equivalence.
+
+Memory-pair hazard detection uses dedicated operand sums rather than the
+general ALU/writeback result mux. Loads and stores always select addition, so
+this removes shifter and CSR/link-result paths from address-conflict detection
+without changing conflicts, pipeline latency, or serialization cycles. The
+decoder/ALU equivalence proof checks the address substitution for arbitrary
+instructions and operands:
+
+```bash
+yosys -Q -s formal/memory_address.ys
+```
+
 A Vivado 2023.2 core-only out-of-context implementation on
 `xc7a100tcsg324-1`, using a 20 ns clock, 0.1 ns user clock uncertainty, and
 `HD.CLK_SRC=BUFGCTRL_X0Y0`, measured the following with the same implementation
 flow and timing constraints:
 
-| Post-route metric | Baseline (`426e4e0`) | Forwarding/flush (`6c60c44`) | PMP region cache |
+| Post-route metric | PMP region cache (`b96cf3d`) | PMP/IRQ changes | Dedicated hazard address (`1a97d9b`) |
 |---|---:|---:|---:|
-| Worst setup slack | -16.454 ns | -4.487 ns | -0.919 ns |
-| Critical datapath delay | 35.751 ns | 23.969 ns | 20.269 ns |
-| Critical logic levels | 45 | 27 | 25 |
-| Hold slack | +0.035 ns | +0.037 ns | +0.033 ns |
-| LUTs | 19,722 | 19,574 | 19,551 |
-| Flip-flops | 6,454 | 6,519 | 7,619 |
+| Worst setup slack | -0.919 ns | -0.665 ns | +0.021 ns |
+| Critical datapath delay | 20.269 ns | 20.226 ns | 19.541 ns |
+| Critical logic levels | 25 | 26 | 24 |
+| Hold slack | +0.033 ns | +0.035 ns | +0.038 ns |
+| LUTs | 19,551 | 19,069 | 19,058 |
+| Flip-flops | 7,619 | 7,639 | 7,639 |
 
-Routing completed without errors and hold timing passed. Setup timing still
-fails at 50 MHz. The setup-only period estimate improves from 36.454 ns through
-24.487 ns to 20.919 ns (about 27.4, 40.8, and 47.8 MHz), not a frequency-sweep
-or full-SoC guarantee. The cache trades 1,100 additional flip-flops for timing.
-External input/output delays are unconstrained in this core-only run. No
-protocol-derived false-path or multicycle exceptions were added. The remaining
-worst path runs from a MEM effective-address register through permission,
-misaligned-access stall, and CSR-write qualification to a PMP configuration
-register's clock enable. The raw PMP decode is no longer on this path.
+The final standard flow (`opt_design`, `place_design`, `phys_opt_design`,
+`route_design`, all with default directives) fully routed 20,786 nets with no
+routing errors. Setup, hold, and pulse-width timing pass at 50 MHz. Setup margin
+is only 21 ps; this is a core-only result, not a full-SoC or board timing
+guarantee. External input/output delays remain unconstrained. The clock period,
+uncertainty, and clock source were unchanged, and no protocol-derived false-path
+or multicycle exceptions were added. Compared with the prior PMP cache, these
+changes save 493 LUTs at a cost of 20 flip-flops, with no additional pipeline
+stage or observed cycle-count penalty.
+
+The remaining worst path runs from a MEM effective-address register through
+permission, misaligned-access stall, and CSR-write qualification to a PMP address
+register. Raw PMP decoding and access-side boundary increments are no longer on
+the permission path. Local reports and checkpoints are in the ignored directory
+`sim/build/vivado_core_pmp_agu_20261117/`.
 
 Cache validation passed 344 ISA/directed runs, two PMA fault runs, four
-interrupt-during-refresh cases, the CSR regression, Verilator lint, Yosys
-structural checks, and the cache coherence proof. Directed cases include all
+interrupt-during-refresh cases, 24 split-store/interrupt combinations, the CSR
+regression, Verilator lint, Yosys structural checks, and seven formal properties.
+All 344 ISA/directed runs and 28 interrupt cases retain their baseline cycle
+counts. Directed cases include all
 16 locked entries, immediate accesses after PMP writes, TOR predecessor
 updates, partial misaligned stores, and traps with dependent younger work.
 
