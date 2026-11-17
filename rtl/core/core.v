@@ -11,6 +11,10 @@ module core #(
     parameter CSR_FORWARD_ENABLE = 1'b1,
     parameter DEBUG_HALT_ON_EBREAK = 1'b0,
     parameter SUPPORT_MISALIGNED = 1'b1,
+    // PMA region supporting word AMOs and LR/SC. Flat test memories default
+    // to all addresses; the SoC restricts this to its real DMEM backing RAM.
+    parameter [31:0] ATOMIC_BASE = 32'b0,
+    parameter [31:0] ATOMIC_MASK = 32'b0,
     // Restrict splitting to byte-addressable RAM when integrating MMIO.
     parameter [31:0] MISALIGNED_BASE = 32'b0,
     parameter [31:0] MISALIGNED_MASK = 32'b0
@@ -110,8 +114,20 @@ module core #(
     // live work is ever present, hold it until the atomic cache refresh lands.
     wire pmp_cache_pending;
     wire pmp_cache_block=pmp_cache_pending && (valid_mem_pipe0 || valid_mem_pipe1);
+    wire atomic_mem0 = valid_mem_pipe0 && instruction_mem_pipe0[6:0]==7'h2f;
+    wire atomic_mem1 = valid_mem_pipe1 && instruction_mem_pipe1[6:0]==7'h2f;
+    wire atomic_lr0 = instruction_mem_pipe0[31:27]==5'b00010;
+    wire atomic_lr1 = instruction_mem_pipe1[31:27]==5'b00010;
+    wire atomic_present = atomic_mem0 || atomic_mem1;
+    wire atomic_owner1 = !atomic_mem0 && atomic_mem1;
+    wire atomic_wait, atomic_rsp_valid, atomic_rsp_exception;
+    wire [31:0] atomic_result, atomic_rsp_tval;
+    wire [4:0] atomic_rsp_cause;
+    wire atomic_bus_valid, atomic_bus_ready, atomic_bus_write;
+    wire [31:0] atomic_bus_addr, atomic_bus_wdata;
+    wire atomic_bus_fire = atomic_bus_valid && atomic_bus_ready;
     wire dmem_stall;
-    assign dmem_stall = !dmem_ready || misaligned_busy0 || misaligned_busy1 || pmp_cache_block;
+    assign dmem_stall = !dmem_ready || atomic_wait || misaligned_busy0 || misaligned_busy1 || pmp_cache_block;
 
     // The signals that are commented out (except CLK) will need to be uncommented and attached a stage suffix for pipelining,
     //  except if the connection is within the same stage.
@@ -595,8 +611,8 @@ module core #(
     reg [31:0] Src_A_MCycle;
     reg [31:0] Src_B_MCycle;
 
-    assign ALUResult_pipe0 = misaligned_request0 ? misaligned_addr0 : alu_out_mem_pipe0;
-    assign ALUResult_pipe1 = misaligned_request1 ? misaligned_addr1 : alu_out_mem_pipe1;
+    assign ALUResult_pipe0 = atomic_mem0 ? atomic_bus_addr : misaligned_request0 ? misaligned_addr0 : alu_out_mem_pipe0;
+    assign ALUResult_pipe1 = atomic_mem1 ? atomic_bus_addr : misaligned_request1 ? misaligned_addr1 : alu_out_mem_pipe1;
 
     
     // ProgramCounter signals
@@ -609,14 +625,17 @@ module core #(
     assign MemRead = (|LwSizeSel_pipe0) || (|LwSizeSel_pipe1); // Memory read signal
     assign WE_pipe0 = RegWrite_wb_pipe0; // Write enable for RegFile
     assign WE_pipe1 = RegWrite_wb_pipe1; // Write enable for RegFile
-    assign LwSizeSel_pipe0 = (valid_mem_pipe0 && !sync_fault0 && !pmp_cache_pending && !RESET) ?
+    assign LwSizeSel_pipe0 = atomic_present ?
+        ((atomic_mem0 && atomic_bus_fire && !atomic_bus_write) ? 5'b00100 : 5'b0) : (valid_mem_pipe0 && !sync_fault0 && !pmp_cache_pending && !RESET) ?
         (misaligned_request0 ? (misaligned_busy0 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe0) : 5'b0;
-    assign LwSizeSel_pipe1 = (valid_mem_pipe1 && !sync_fault1 && !pmp_cache_pending && !RESET && !(valid_mem_pipe0 && sync_fault0) &&
+    assign LwSizeSel_pipe1 = atomic_present ?
+        ((atomic_mem1 && atomic_bus_fire && !atomic_bus_write) ? 5'b00100 : 5'b0) : (valid_mem_pipe1 && !sync_fault1 && !pmp_cache_pending && !RESET && !(valid_mem_pipe0 && sync_fault0) &&
         !(mem_redirect && (is_cond_jump_mem_pipe0 || is_jal_mem_pipe0 || is_jalr_mem_pipe0))) ?
         (misaligned_request1 ? (misaligned_busy1 ? 5'b00001 : 5'b0) : LwSizeSel_mem_pipe1) : 5'b0;
 
     always @(*) begin
-        case(LwSizeSel_mem_pipe0)
+        if (atomic_mem0) mem_rdata_mem_pipe0=atomic_result;
+        else case(LwSizeSel_mem_pipe0)
             5'b00001: mem_rdata_mem_pipe0 = {{24{load_data_input0[7]}}, load_data_input0[7:0]}; // lb
             5'b00010: mem_rdata_mem_pipe0 = {{16{load_data_input0[15]}}, load_data_input0[15:0]}; // lh
             5'b00100: mem_rdata_mem_pipe0 = load_data_input0[31:0]; // lw
@@ -628,7 +647,8 @@ module core #(
 
 
     always @(*) begin
-        case(LwSizeSel_mem_pipe1)
+        if (atomic_mem1) mem_rdata_mem_pipe1=atomic_result;
+        else case(LwSizeSel_mem_pipe1)
             5'b00001: mem_rdata_mem_pipe1 = {{24{load_data_input1[7]}}, load_data_input1[7:0]}; // lb
             5'b00010: mem_rdata_mem_pipe1 = {{16{load_data_input1[15]}}, load_data_input1[15:0]}; // lh
             5'b00100: mem_rdata_mem_pipe1 = load_data_input1[31:0]; // lw
@@ -639,8 +659,9 @@ module core #(
     end
 
     // WriteData logic
-    assign WriteData_out_pipe0 = misaligned_request0 ? misaligned_wdata0 : store_data_mem_pipe0;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe0 = misaligned_request0 ?
+    assign WriteData_out_pipe0 = atomic_mem0 ? atomic_bus_wdata : misaligned_request0 ? misaligned_wdata0 : store_data_mem_pipe0;    // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe0 = atomic_present ?
+        ((atomic_mem0 && atomic_bus_fire && atomic_bus_write) ? 3'b100 : 3'b000) : misaligned_request0 ?
         ((misaligned_busy0 && memory_byte_step && |MemWrite_mem_pipe0) ? 3'b001 : 3'b000) :
         ((MEM_WB_en_pipe0 && !MEM_WB_flush_pipe0) ? MemWrite_mem_pipe0 : 3'b000); // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe0;
@@ -670,8 +691,9 @@ module core #(
     end
 
     // WriteData logic
-    assign WriteData_out_pipe1 = misaligned_request1 ? misaligned_wdata1 : store_data_mem_pipe1;    // Change datapath as appropriate if supporting sb/sh
-    assign MemWrite_out_pipe1 = misaligned_request1 ?
+    assign WriteData_out_pipe1 = atomic_mem1 ? atomic_bus_wdata : misaligned_request1 ? misaligned_wdata1 : store_data_mem_pipe1;    // Change datapath as appropriate if supporting sb/sh
+    assign MemWrite_out_pipe1 = atomic_present ?
+        ((atomic_mem1 && atomic_bus_fire && atomic_bus_write) ? 3'b100 : 3'b000) : misaligned_request1 ?
         ((misaligned_busy1 && memory_byte_step && |MemWrite_mem_pipe1) ? 3'b001 : 3'b000) :
         ((MEM_WB_en_pipe1 && !MEM_WB_flush_pipe1) ? MemWrite_mem_pipe1 : 3'b000); // Change datapath as appropriate if supporting sb/sh
     reg [31:0] rs2_val_ex_forward_pipe1;
@@ -741,10 +763,14 @@ module core #(
     endfunction
     wire trigger_exec0=trigger_enable && native_trigger_match(pc_mem_pipe0,3'b100,trigger_control,trigger_address);
     wire trigger_data0=trigger_enable && native_trigger_match(alu_out_mem_pipe0,
-        {1'b0,(|MemWrite_mem_pipe0),MemRead_mem_pipe0},trigger_control,trigger_address);
+        (atomic_mem0 ? (atomic_lr0 ? 3'b001 :
+         (instruction_mem_pipe0[31:27]==5'b00011 ? 3'b010 : 3'b011)) :
+         {1'b0,(|MemWrite_mem_pipe0),MemRead_mem_pipe0}),trigger_control,trigger_address);
     wire trigger_exec1=trigger_enable && native_trigger_match(pc_mem_pipe1,3'b100,trigger_control,trigger_address);
     wire trigger_data1=trigger_enable && native_trigger_match(alu_out_mem_pipe1,
-        {1'b0,(|MemWrite_mem_pipe1),MemRead_mem_pipe1},trigger_control,trigger_address);
+        (atomic_mem1 ? (atomic_lr1 ? 3'b001 :
+         (instruction_mem_pipe1[31:27]==5'b00011 ? 3'b010 : 3'b011)) :
+         {1'b0,(|MemWrite_mem_pipe1),MemRead_mem_pipe1}),trigger_control,trigger_address);
     wire [127:0] pmp_config;
     wire [511:0] pmp_address;
     wire [15:0] pmp_active_entries;
@@ -772,7 +798,9 @@ module core #(
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
-        .access_type(MemRead_mem_pipe0 ? 3'b001 : 3'b010),
+        .access_type(atomic_mem0 ? (atomic_lr0 ? 3'b001 :
+         (instruction_mem_pipe0[31:27]==5'b00011 ? 3'b010 : 3'b011)) :
+         (MemRead_mem_pipe0 ? 3'b001 : 3'b010)),
         .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
     pmp_check pmp_fetch1(.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
@@ -783,7 +811,9 @@ module core #(
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
-        .access_type(MemRead_mem_pipe1 ? 3'b001 : 3'b010),
+        .access_type(atomic_mem1 ? (atomic_lr1 ? 3'b001 :
+         (instruction_mem_pipe1[31:27]==5'b00011 ? 3'b010 : 3'b011)) :
+         (MemRead_mem_pipe1 ? 3'b001 : 3'b010)),
         .allow(pmp_data_allow[1]), .fault_address(pmp_badaddr1));
     // Hold all stages while a split access uses the external byte lane.
     wire memory_byte_step=locked && imem_ready && dmem_ready && !pmp_cache_pending && !MCycle_Busy && !is_ebreak_wb && !RESET;
@@ -822,6 +852,49 @@ module core #(
         .store_data(store_data_mem_pipe1),.read_data(ReadData_in_pipe1),
         .busy(misaligned_busy1),.bus_address(misaligned_addr1),
         .bus_store_data(misaligned_wdata1),.load_data(misaligned_rdata1));
+    // Atomic instructions are serialized by the existing system barrier in
+    // ID. Only the owning MEM slot can access RAM until the response retires.
+    // Bus progress deliberately does not depend on atomic_wait/dmem_stall.
+    wire atomic_request = !RESET && !pmp_cache_pending &&
+        ((atomic_mem0 && !sync_fault0) ||
+         (atomic_mem1 && !sync_fault1 && !(valid_mem_pipe0 && sync_fault0) && !mem_redirect));
+    assign atomic_wait = atomic_request && !atomic_rsp_valid;
+    wire atomic_rsp_ready = atomic_present &&
+        (atomic_owner1 ? MEM_WB_en_pipe1 : MEM_WB_en_pipe0);
+    reg atomic_bus_rsp_valid;
+    reg [31:0] atomic_bus_rsp_data;
+    wire atomic_bus_rsp_ready;
+    assign atomic_bus_ready = memory_byte_step && !atomic_bus_rsp_valid;
+    always @(posedge CLK) begin
+        if (RESET) begin atomic_bus_rsp_valid<=0; atomic_bus_rsp_data<=0; end
+        else begin
+            if (atomic_bus_rsp_valid && atomic_bus_rsp_ready) atomic_bus_rsp_valid<=0;
+            if (atomic_bus_fire) begin
+                atomic_bus_rsp_valid<=1;
+                atomic_bus_rsp_data<=atomic_owner1 ? ReadData_in_pipe1 : ReadData_in_pipe0;
+            end
+        end
+    end
+    wire atomic_lock_req;
+    atomic_unit atomic_inst(
+        .clk(CLK), .rst(RESET), .req_valid(atomic_request), .req_ready(),
+        .req_funct5(atomic_owner1 ? instruction_mem_pipe1[31:27] : instruction_mem_pipe0[31:27]),
+        .req_aq(atomic_owner1 ? instruction_mem_pipe1[26] : instruction_mem_pipe0[26]),
+        .req_rl(atomic_owner1 ? instruction_mem_pipe1[25] : instruction_mem_pipe0[25]),
+        .req_addr(atomic_owner1 ? alu_out_mem_pipe1 : alu_out_mem_pipe0),
+        .req_operand(atomic_owner1 ? store_data_mem_pipe1 : store_data_mem_pipe0),
+        .rsp_valid(atomic_rsp_valid), .rsp_ready(atomic_rsp_ready),
+        .rsp_result(atomic_result), .rsp_exception(atomic_rsp_exception),
+        .rsp_cause(atomic_rsp_cause), .rsp_tval(atomic_rsp_tval),
+        .lock_req(atomic_lock_req), .lock_grant(atomic_present),
+        .mem_req_valid(atomic_bus_valid), .mem_req_ready(atomic_bus_ready),
+        .mem_req_write(atomic_bus_write), .mem_req_addr(atomic_bus_addr),
+        .mem_req_wdata(atomic_bus_wdata), .mem_req_wstrb(),
+        .mem_rsp_valid(atomic_bus_rsp_valid), .mem_rsp_ready(atomic_bus_rsp_ready),
+        .mem_rsp_rdata(atomic_bus_rsp_data), .mem_rsp_error(1'b0),
+        .invalidate_reservation((|MemWrite_out_pipe0) || (|MemWrite_out_pipe1)),
+        .clear_reservation(csr_trap_fire || mret_fire || fencei_fire || pmp_update_accepted)
+    );
     // Control CSR writes remain barriers; data CSR accesses bypass older
     // EX/MEM writes. One CSR per issue group keeps same-cycle RMW ordered.
     wire csr_wait, csr_split;
@@ -851,7 +924,7 @@ module core #(
         input [31:0] insn;
         begin
             serial_instruction = (insn[6:0] == 7'h73 && insn[14:12] == 0) ||
-                                 (insn[6:0] == 7'h0f);
+                                 (insn[6:0] == 7'h0f) || (insn[6:0] == 7'h2f);
         end
     endfunction
     function counter_access;
@@ -940,6 +1013,17 @@ module core #(
             sync_fault0 = 1'b1; sync_cause0 = 0; sync_value0 = PC_branch_mem_pipe0;
         end else if (trigger_data0) begin
             sync_fault0=1'b1; sync_cause0=32'd3; sync_value0=alu_out_mem_pipe0;
+        end else if (atomic_mem0 && alu_out_mem_pipe0[1:0]!=0) begin
+            sync_fault0=1'b1; sync_cause0=atomic_lr0 ? 32'd4 : 32'd6;
+            sync_value0=alu_out_mem_pipe0;
+        end else if (atomic_mem0 &&
+                     ((alu_out_mem_pipe0 & ATOMIC_MASK)!=(ATOMIC_BASE & ATOMIC_MASK) ||
+                      !pmp_data_allow[0])) begin
+            sync_fault0=1'b1; sync_cause0=atomic_lr0 ? 32'd5 : 32'd7;
+            sync_value0=alu_out_mem_pipe0;
+        end else if (atomic_mem0 && atomic_rsp_valid && atomic_rsp_exception) begin
+            sync_fault0=1'b1; sync_cause0={27'b0,atomic_rsp_cause};
+            sync_value0=atomic_rsp_tval;
         end else if (!misaligned_supported0 && (MemRead_mem_pipe0 || |MemWrite_mem_pipe0) &&
                      ((funct3_mem_pipe0[1:0] == 2 && alu_out_mem_pipe0[1:0] != 0) ||
                       (funct3_mem_pipe0[1:0] == 1 && alu_out_mem_pipe0[0]))) begin
@@ -968,6 +1052,17 @@ module core #(
             sync_fault1 = 1'b1; sync_cause1 = 0; sync_value1 = PC_branch_mem_pipe1;
         end else if (trigger_data1) begin
             sync_fault1=1'b1; sync_cause1=32'd3; sync_value1=alu_out_mem_pipe1;
+        end else if (atomic_mem1 && alu_out_mem_pipe1[1:0]!=0) begin
+            sync_fault1=1'b1; sync_cause1=atomic_lr1 ? 32'd4 : 32'd6;
+            sync_value1=alu_out_mem_pipe1;
+        end else if (atomic_mem1 &&
+                     ((alu_out_mem_pipe1 & ATOMIC_MASK)!=(ATOMIC_BASE & ATOMIC_MASK) ||
+                      !pmp_data_allow[1])) begin
+            sync_fault1=1'b1; sync_cause1=atomic_lr1 ? 32'd5 : 32'd7;
+            sync_value1=alu_out_mem_pipe1;
+        end else if (atomic_mem1 && atomic_rsp_valid && atomic_rsp_exception) begin
+            sync_fault1=1'b1; sync_cause1={27'b0,atomic_rsp_cause};
+            sync_value1=atomic_rsp_tval;
         end else if (!misaligned_supported1 && (MemRead_mem_pipe1 || |MemWrite_mem_pipe1) &&
                      ((funct3_mem_pipe1[1:0] == 2 && alu_out_mem_pipe1[1:0] != 0) ||
                       (funct3_mem_pipe1[1:0] == 1 && alu_out_mem_pipe1[0]))) begin
@@ -1268,8 +1363,8 @@ module core #(
     // CSR/link-result muxes and general ALU operation selection off this path.
     wire [31:0] hazard_addr_ex_pipe0=Src_A_pipe0+Src_B_pipe0;
     wire [31:0] hazard_addr_ex_pipe1=Src_A_pipe1+Src_B_pipe1;
-    assign alu_out_ex_pipe0 = csr_rvalid_ex_pipe0 ? csr_rdata_ex_pipe0 : (is_jal_ex_pipe0 || is_jalr_ex_pipe0) ? pcplus4_ex_pipe0 : ALUResult_ex_pipe0;
-    assign alu_out_ex_pipe1 = csr_rvalid_ex_pipe1 ? csr_rdata_ex_pipe1 : (is_jal_ex_pipe1 || is_jalr_ex_pipe1) ? pcplus4_ex_pipe1 : ALUResult_ex_pipe1;
+    assign alu_out_ex_pipe0 = instruction_ex_pipe0[6:0]==7'h2f ? Src_A_pipe0 : csr_rvalid_ex_pipe0 ? csr_rdata_ex_pipe0 : (is_jal_ex_pipe0 || is_jalr_ex_pipe0) ? pcplus4_ex_pipe0 : ALUResult_ex_pipe0;
+    assign alu_out_ex_pipe1 = instruction_ex_pipe1[6:0]==7'h2f ? Src_A_pipe1 : csr_rvalid_ex_pipe1 ? csr_rdata_ex_pipe1 : (is_jal_ex_pipe1 || is_jalr_ex_pipe1) ? pcplus4_ex_pipe1 : ALUResult_ex_pipe1;
 
 
 
@@ -1490,6 +1585,7 @@ module core #(
     // Instantiate Decoder
     decode_unit decode_unit0(
                     .Instruction(Instr_id_pipe0),
+                    .atomic_valid(),
                     .illegal_instruction(illegal_id_pipe0),
                     .Opcode(opcode_id_pipe0),
                     .Rs1(rs1_id_pipe0),
@@ -1514,6 +1610,7 @@ module core #(
     
     decode_unit decode_unit1(
                     .Instruction(Instr_id_pipe1),
+                    .atomic_valid(),
                     .illegal_instruction(illegal_id_pipe1),
                     .Opcode(opcode_id_pipe1),
                     .Rs1(rs1_id_pipe1),

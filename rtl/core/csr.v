@@ -86,7 +86,7 @@ module csr #(
     localparam CSR_MHARTID = 12'hF14;
     localparam CSR_MCONFIGPTR = 12'hF15;
 
-    localparam [31:0] MISA_VALUE = 32'h4000_1100; // RV32 I+M, no U/S/A/F/C.
+    localparam [31:0] MISA_VALUE = 32'h4000_1101; // RV32 I+M+A, no U/S/F/C.
     localparam [31:0] MSTATUS_FIXED = 32'h0000_1800; // MPP=M, only supported mode.
     localparam [31:0] MSTATUS_MASK = 32'h0000_0088; // MIE, MPIE.
     localparam [31:0] MIE_MASK = 32'h0000_0888; // MEIE, MTIE, MSIE.

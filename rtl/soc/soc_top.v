@@ -719,7 +719,8 @@ end
 ////----------------------------------------------------------------
 //// RV port map
 ////----------------------------------------------------------------
-core #(.PC_INIT(PC_INIT), .MISALIGNED_BASE(DMEM_BASE),
+core #(.PC_INIT(PC_INIT), .ATOMIC_BASE(DMEM_BASE),
+       .ATOMIC_MASK(32'hffffc000), .MISALIGNED_BASE(DMEM_BASE),
        .MISALIGNED_MASK(32'hffff0000)) core_inst(
     .irq_software(timer_software_irq), .irq_timer(timer_irq), .irq_external(1'b0),
     .time_value(machine_time),

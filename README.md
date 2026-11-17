@@ -1,8 +1,8 @@
-# RV32IM Dual-Issue In-Order Pipelined Processor
+# RV32IMA Dual-Issue In-Order Pipelined Processor
 
-A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC-V processor supporting the RV32IM ISA. Targets the Xilinx Nexys 4 (Artix-7) board, synthesised and implemented in Vivado 2019.2.
+A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC-V processor supporting the RV32IMA ISA. Targets the Xilinx Nexys 4 (Artix-7) board, synthesised and implemented in Vivado 2019.2.
 
-**Historical board result:** ~50 MHz (original Artix-7 implementation). Current core OOC timing is reported below.
+**Historical board result:** ~50 MHz (original Artix-7 implementation). Timing tables below identify earlier RTL snapshots; the new RV32A integration has not been placed or routed.
 
 **CoreMark score:** 2.22 CoreMark/MHz
 
@@ -22,9 +22,9 @@ The processor issues two instructions per cycle (pipe0 = older, pipe1 = newer) t
 | MEM   | Memory | DMEM read/write (BRAM), branch resolution |
 | WB    | Write-Back | Register file write |
 
-Both pipes share a single register file and a single DMEM port; structural hazards between pipes are resolved by the hazard controller.
+Both pipes share a single register file and use two ports of the same DMEM. Structural hazards are resolved by the hazard controller; atomic instructions temporarily own both memory access paths.
 
-### Supported ISA (RV32IM)
+### Supported ISA (RV32IMA)
 
 | Category | Instructions |
 |----------|-------------|
@@ -34,6 +34,7 @@ Both pipes share a single register file and a single DMEM port; structural hazar
 | Multiply/Divide | MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU |
 | Load | LB, LH, LW, LBU, LHU |
 | Store | SB, SH, SW |
+| Atomic (A: Zaamo + Zalrsc) | LR.W, SC.W, AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W |
 | Branch | BEQ, BNE, BLT, BGE, BLTU, BGEU |
 | Jump | JAL, JALR |
 | System | ECALL, EBREAK, MRET, WFI |
@@ -152,6 +153,84 @@ external I/O unconstrained. The full SoC was subsequently rerouted with the
 DSP-based RTL; its setup timing remains negative at 50/100 MHz, as detailed in
 the full-SoC results below. Core-only closure does not establish SoC closure.
 
+
+### RV32A atomic execution
+
+`rtl/core/atomic_unit.v` implements all eleven RV32A word instructions. Decode
+checks `funct3=010`, the eleven legal `funct5` values, and `rs2=x0` for LR;
+unsupported widths and reserved operations trap. All four `aq`/`rl` combinations
+are legal. Address and operand come from forwarded `rs1` and `rs2`; results use
+the existing memory-result writeback path. Pipeline registers already carry the
+whole instruction, preserving the operation, ordering bits, destination and PC.
+
+The first implementation serializes each atomic instruction through the system
+barrier: older instructions drain before it issues, and younger instructions
+wait until it completes. A shared engine handles either pipe. The memory-port
+mux grants exclusive access to the owning MEM instruction and blocks the other
+port. This conservative policy imposes sufficient ordering for every `aq`/`rl`
+combination. AMOs return the old memory value; SC returns zero on success or one
+on reservation failure. Writing `rd=x0` still performs the memory operation.
+
+The engine latches request payloads, uses independent memory-request/response
+handshakes, and holds its result until the core consumes it. The adapter bridges
+to the current core's synchronous memory interface: one ready-qualified bus beat
+is captured and acknowledged on the following core cycle. Bus progress does
+not depend on the atomic pipeline stall, avoiding request/ready deadlocks and
+repeated stores under backpressure. The present BRAM fabric has no dynamic bus
+error signal; PMP/PMA faults are checked before dispatch. The reusable engine
+also supports read/write error responses, including store/AMO fault causes for
+AMO read failures.
+
+LR reserves one aligned word. SC checks the most recent reservation and always
+consumes it, whether successful or not. Ordinary committed stores on either
+pipe conservatively invalidate the reservation, even at another address; this
+also handles normal stores through aliases of backing RAM. Traps, `mret`,
+`fence.i`, and PMP updates clear it. Branch flushes alone do not clear a live
+reservation. LR releases memory ownership when it finishes; memory is never
+locked across the instruction sequence from LR to SC. Constrained LR/SC loops
+with no interfering stores make progress; the upstream test completes 1,024
+successful increments with every tested stall seed.
+
+Atomic words must be four-byte aligned, independently of ordinary misaligned
+load/store support. LR uses load alignment/access faults; SC and AMOs use
+store/AMO faults. SC still undergoes permission checks when no reservation
+exists. AMOs require both read and write PMP permissions before any access.
+`ATOMIC_BASE`/`ATOMIC_MASK` select the supported PMA region (defaults describe a
+flat abstract RAM). The SoC sets it to its actual 16 KiB DMEM backing RAM,
+`0x10010000` through `0x10013fff`. Atomics to MMIO, ROM, or the remaining DMEM
+aliases raise access faults. The current platform has one hart and no DMA;
+adding another memory master requires global arbitration and reservation
+invalidation events, not just an additional local atomic unit.
+
+Run the standalone decode/unit and directed architectural regressions with:
+
+```bash
+python3 scripts/test_atomic.py
+```
+
+To include the ten upstream physical RV32A tests, initialize `riscv-tests/env`
+and pass its checkout (or use `--riscv-env` for a separate physical environment):
+
+```bash
+python3 scripts/test_atomic.py --riscv-tests /path/to/riscv-tests
+```
+
+Validation passed 2,048 decode combinations, 4,635 unit transactions, and 68
+architectural runs over four deterministic instruction/data stall seeds: 40
+upstream RV32A runs and 28 directed runs. Directed coverage includes both issue
+slots, destination/source overlap, signed/unsigned arithmetic, `rd=x0`, failed
+SC, latest-LR replacement, byte stores and RAM aliases, taken branches,
+wrong-path atomics, alignment/PMP/PMA/encoding faults, interrupt entry during
+read/write/completion, and reservation clearing when an interrupt handler
+executes LR and returns with `mret`.
+
+The existing 344 ISA/directed runs, two PMA runs, 97 CSR-suite checks, 28 existing
+PMP/split-access interrupt cases, and the mul/div suite also pass. Local legacy
+CSR test fixtures were updated for the new `misa=0x40001101` value. Yosys reports
+zero structural problems and no inferred latches; Verilator has no new atomic
+warning or combinational-loop warning. Physical resource/timing measurements
+above and below predate this RV32A change; no new timing-closure claim is made.
+
 ### Data Forwarding
 
 11 bypass paths handled by `forward_ctrl`, covering:
@@ -190,6 +269,7 @@ rv32im-processor/
 │   │   ├── alu.v           ← arithmetic-logic unit
 │   │   ├── barrel_shifter.v
 │   │   ├── muldiv_unit.v   ← DSP multiply + iterative divide
+│   │   ├── atomic_unit.v   ← shared AMO and LR/SC engine
 │   │   ├── reg_file.v      ← 32×32-bit register file
 │   │   ├── pc_reg.v        ← program counter register
 │   │   ├── next_pc.v       ← next-PC computation
@@ -244,8 +324,8 @@ The build produces a `.coe` file for loading into the IMEM Block RAM. The `hex_t
 
 ## M-mode CSR, traps, and interrupts
 
-The core currently implements machine mode only. `misa` is fixed to RV32IM
-(`0x40001100`); it does not advertise U/S, compressed, floating-point, or atomic
+The core currently implements machine mode only. `misa` is fixed to RV32IMA
+(`0x40001101`); it does not advertise U/S, compressed, or floating-point
 instructions. S/H CSR address constants are retained in `csr.v` for future work,
 but accesses to those unimplemented CSRs trap instead of exposing placeholder
 registers. This is an intentional change from the earlier CSR-bank prototype.
