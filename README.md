@@ -4,7 +4,7 @@ A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC
 
 **Historical board result:** ~50 MHz (original Artix-7 implementation). Timing tables below identify earlier RTL snapshots; the new RV32A integration has not been placed or routed.
 
-**CoreMark score:** 2.22 CoreMark/MHz
+**CoreMark, current RTL simulation:** **2.4397 CoreMark/MHz (`-O1`)** or **3.3807 (`-O2`)**, GCC 10.2.0, ideal zero-wait BRAM model. See the reproducible run below; this is not a measured board score.
 
 ---
 
@@ -307,18 +307,70 @@ rv32im-processor/
 
 ---
 
-## Building the Software (CoreMark)
+## Running CoreMark on the current RTL
 
-Prerequisites: RISC-V GCC cross-compiler and CMake 3.15+.
+The current RV32IMA core (`0748264`) was tested with unmodified EEMBC CoreMark
+kernels from commit `1f483d5b8316753a742cbf5590caf5bd0a4e4777`. The runner extracts
+committed files with `git show`; modifications in the source checkout are not
+used. Only the platform header, startup, timing, and UART port are supplied by
+this repository. The original COE-oriented port in `sw/coremark/` remains
+unchanged and is not used for these measurements.
 
-```bash
-cd sw/coremark
-mkdir build && cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=../riscv-toolchain.cmake
-make
+| Performance seeds, 40 iterations | GCC `-O1` | GCC `-O2` |
+|---|---:|---:|
+| Timed CPU cycles | 16,395,495 | 11,831,760 |
+| Cycles per iteration | 409,887.375 | 295,794.000 |
+| CoreMark/MHz, RTL estimate | **2.439695** | **3.380731** |
+| Timed simulated seconds at 1 MHz | 16.395495 | 11.831760 |
+
+Both standard seed sets pass: performance `0,0,0x66` and validation
+`0x3415,0x3415,0x66`. Each run uses 2000 bytes total for the three algorithms,
+one context, static allocation, no cache, and always-ready instruction/data
+memory. The model maps the actual 32 KiB instruction and 16 KiB data RAM sizes
+and SoC addresses. Per-algorithm CRCs match the official known values; final
+CRCs also match independent native execution of the same pristine kernels:
+performance `crcfinal=0x65c5`, validation `crcfinal=0xf006` after 40 iterations.
+Each target run exceeds ten simulated seconds at the explicit 1 MHz model
+clock. Simulator timestamps and the software timer use that same frequency.
+
+The cross compiler is `riscv64-unknown-elf-gcc` 10.2.0. All benchmark C files use
+the same flags, with `-O1` or `-O2` as indicated:
+
+```text
+-march=rv32ima -mabi=ilp32 -mcmodel=medany -msmall-data-limit=0
+-ffreestanding -fno-builtin -fno-pic -fno-pie -ffunction-sections -fdata-sections
 ```
 
-The build produces a `.coe` file for loading into the IMEM Block RAM. The `hex_to_coe.py` utility converts a raw Intel-HEX or binary to COE format if needed.
+There is no LTO or PGO. Timing uses `mcycle` over upstream's timed region;
+initialization and output formatting are outside that interval. The score is
+`iterations * 1,000,000 / timed_cycles`. The port uses `HAS_FLOAT=0`; firmware
+prints integer seconds/rates, while the host computes this value from unrounded
+cycle counts. The 1 MHz model clock allows full
+validation-duration runs without simulating 500 million cycles per seed set;
+it does not establish an achievable FPGA clock. These are architectural
+throughput estimates from core RTL with ideal memory, not a board measurement,
+full-SoC benchmark, or new timing-closure result. The older 2.22/MHz headline had
+no matching reproducible configuration and is not used as a performance baseline.
+
+Requirements: Verilator, GNU make, host GCC/G++, the RISC-V cross compiler, and
+an existing Git checkout of EEMBC CoreMark. Run:
+
+```bash
+python3 scripts/run_coremark.py --coremark /path/to/coremark \
+  --rev 1f483d5b8316753a742cbf5590caf5bd0a4e4777 \
+  --iterations 40 --hz 1000000 --opt O2
+python3 scripts/run_coremark.py --coremark /path/to/coremark \
+  --rev 1f483d5b8316753a742cbf5590caf5bd0a4e4777 \
+  --iterations 40 --hz 1000000 --opt O1
+```
+
+The script builds both seed sets, validates standard CRCs and native-reference
+CRCs, checks simulated clock/timer consistency, and saves source hashes,
+compiler commands, ELF/HEX images, output logs and JSON results under the ignored
+`sim/build/coremark/` directory. `--build` selects another directory; the
+measurements above are preserved in `sim/build/coremark_verified/`. Smaller
+iteration counts are useful smoke tests but may fall below the required run
+duration; their JSON results explicitly mark that condition.
 
 ---
 
