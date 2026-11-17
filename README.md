@@ -1,8 +1,8 @@
 # RV32IMA Dual-Issue In-Order Pipelined Processor
 
-A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC-V processor supporting the RV32IMA ISA. Targets the Xilinx Nexys 4 (Artix-7) board, synthesised and implemented in Vivado 2019.2.
+A personal FPGA implementation of a dual-issue, in-order, 5-stage pipelined RISC-V processor supporting the RV32IMA ISA. Targets the Xilinx Nexys 4 (Artix-7) board. The original implementation used Vivado 2019.2; the current full-SoC flow uses Vivado 2023.2.
 
-**Historical board result:** ~50 MHz (original Artix-7 implementation). Timing tables below identify earlier RTL snapshots; the new RV32A integration has not been placed or routed.
+**Historical board result:** ~50 MHz (original Artix-7 implementation). The current RV32IMA full SoC has been synthesized and routed in Vivado 2023.2, but setup timing does **not** close at the requested 50 MHz core / 100 MHz BRAM clocks: WNS **−8.237 ns**. See the resource and timing comparison below.
 
 **CoreMark, current RTL simulation:** **2.4397 CoreMark/MHz (`-O1`)**, **3.3807 (`-O2`)**, or **3.4640 (`-O3`)**, GCC 10.2.0, ideal zero-wait BRAM model. See the reproducible run below; this is not a measured board score.
 
@@ -228,8 +228,9 @@ The existing 344 ISA/directed runs, two PMA runs, 97 CSR-suite checks, 28 existi
 PMP/split-access interrupt cases, and the mul/div suite also pass. Local legacy
 CSR test fixtures were updated for the new `misa=0x40001101` value. Yosys reports
 zero structural problems and no inferred latches; Verilator has no new atomic
-warning or combinational-loop warning. Physical resource/timing measurements
-above and below predate this RV32A change; no new timing-closure claim is made.
+warning or combinational-loop warning. The full-SoC resource/timing comparison
+below includes this RV32A integration; earlier core-only OOC measurements above
+remain historical snapshots. The current full SoC has not achieved timing closure.
 
 
 ### Atomic latency with the current memory adapter
@@ -717,54 +718,87 @@ specified, so internal timing results alone do not constitute complete board
 interface signoff. The build ends with a routed checkpoint and timing,
 utilization, clock-interaction, exception, and DRC reports.
 
-The full-SoC rerun on 2026-11-17 used DSP-based mul/div RTL from `9c41c06`,
-the same board, IP configuration, clock constraints, and default implementation
-flow. It completed synthesis with no black boxes and fully routed all 22,007
-routable nets with zero routing errors. There are no DRC errors; six DSP
-pipelining advisory warnings remain. Setup timing still does **not** close at
-the requested 50 MHz core / 100 MHz BRAM configuration:
+The latest full-SoC run on 2026-11-18 used source checkout `de36d9c`
+(including RV32A RTL from `0748264`), on the same board, with the same COE memory
+images, IP configuration, clock constraints, and default implementation flow
+as the previous DSP mul/div run (`9c41c06`). No RTL or timing constraints were
+changed for this measurement. Synthesis completed with no black boxes; all
+22,319 routable nets were fully routed with zero routing errors. There are no
+DRC errors; six DSP pipelining advisory warnings remain (two DPOP-1, four DPOP-2).
+Setup timing still does **not** close at the requested 50 MHz core / 100 MHz
+BRAM configuration:
 
-| Full-SoC post-route metric | Before DSP mul/div | DSP mul/div |
-|---|---:|---:|
-| Worst setup slack | -6.846 ns | -7.147 ns |
-| Total negative setup slack | -3508.618 ns | -3603.940 ns |
-| Setup-failing endpoints | 2,627 | 2,546 |
-| Worst hold slack | +0.036 ns | +0.040 ns |
-| Hold-failing endpoints | 0 | 0 |
-| LUTs | 21,766 | 19,767 |
-| Flip-flops | 8,103 | 7,723 |
-| DSP48E1 | 0 | 4 |
-| RAMB36 / RAMB18 | 12 / 1 | 12 / 1 |
+| Full-SoC post-route metric | Before DSP mul/div | DSP mul/div, before RV32A | Current RV32IMA |
+|---|---:|---:|---:|
+| Worst setup slack | -6.846 ns | -7.147 ns | -8.237 ns |
+| Total negative setup slack | -3508.618 ns | -3603.940 ns | -7993.786 ns |
+| Setup-failing endpoints | 2,627 | 2,546 | 3,679 |
+| Worst hold slack | +0.036 ns | +0.040 ns | +0.030 ns |
+| Hold-failing endpoints | 0 | 0 | 0 |
+| LUTs | 21,766 | 19,767 | 20,060 |
+| Flip-flops | 8,103 | 7,723 | 7,951 |
+| DSP48E1 | 0 | 4 | 4 |
+| RAMB36 / RAMB18 | 12 / 1 | 12 / 1 | 12 / 1 |
+| Worst-path datapath delay | 16.130 ns | 16.423 ns | 17.509 ns |
 
-The new SoC saves 1,999 LUTs (9.18%) and 380 flip-flops (4.69%), at a cost of
-four DSP48E1s. On `xc7a100t`, it occupies 31.18% of LUTs, 6.09% of flip-flops,
-1.67% of DSPs, and 9.26% of BRAM capacity (12.5 equivalent RAMB36 tiles).
-Smaller area and faster multiplication have not closed the SoC memory path.
+Compared with the preceding DSP-based SoC, the RV32A design uses 293 more LUTs
+(+1.48%) and 228 more flip-flops (+2.95%), with unchanged DSP and BRAM counts.
+On `xc7a100t`, the current design occupies **31.64% of LUTs**, **6.27% of
+flip-flops**, **1.67% of DSPs**, and **9.26% of BRAM capacity** (12.5 equivalent
+RAMB36 tiles). These are whole-SoC post-route differences, including optimization
+and placement changes; they are not an isolated atomic-unit area measurement.
+The earlier DSP conversion saved 1,999 LUTs and 380 flip-flops before RV32A.
 
-The worst path now starts at
-`soc_top_inst/core_inst/ex_mem_reg1/alu_out_mem_reg[2]`, passes through PMP
-permission and store-data qualification, and ends at the DMEM BRAM data input
-`ramloop[3].../DIADI[5]`. Its core-to-BRAM crossing has a 10 ns setup requirement
-and a 16.423 ns datapath delay (4.463 ns logic, 11.960 ns routing), with 19 logic
-levels. This remains outside the multiplier datapath.
+For comparison at synthesis, the current design uses 19,519 LUTs and 7,915
+flip-flops, versus 19,377 and 7,697 before RV32A. The atomic-unit synthesis
+hierarchy accounts for 236 LUTs and 176 flip-flops; integration logic also lives
+in decode, memory arbitration, and pipeline control. Both syntheses use four
+DSP48E1s and 12 RAMB36 plus one RAMB18.
 
-| Clock direction, post-route WNS | Before DSP mul/div | DSP mul/div |
-|---|---:|---:|
-| Core to core (20 ns requirement) | -3.593 ns | -2.821 ns |
-| Core to BRAM (10 ns requirement) | -6.846 ns | -7.147 ns |
-| BRAM to core (10 ns requirement) | -3.703 ns | -3.361 ns |
+The worst routed path starts at
+`soc_top_inst/core_inst/ex_mem_reg1/alu_out_mem_reg[12]`, passes through PMP
+permission and memory/pipeline qualification, and ends at the DMEM BRAM data
+input `ramloop[1].../DIBDI[7]`. Its core-to-BRAM crossing has a **10 ns setup
+requirement** and a **17.509 ns datapath delay** (3.452 ns logic, 14.057 ns routing),
+with 17 logic levels. Routing contributes 80.29% of that delay. The preceding
+DSP-based run had 19 logic levels and 16.423 ns datapath delay: fewer logic levels
+in the new run have not offset its greater routing delay. The bottleneck remains
+the memory/control path, outside the multiplier datapath.
 
-Thus, the improved core-only OOC result does not establish SoC timing closure.
-Hold and pulse-width timing pass. There are no unconstrained internal
-endpoints or valid timing exceptions; two external input ports and 19 output
-ports still have no external delay budgets. All implemented RTL snapshots
-match the source used to launch the build; this rerun changes no RTL.
+| Clock direction, post-route WNS | Before DSP mul/div | DSP mul/div, before RV32A | Current RV32IMA |
+|---|---:|---:|---:|
+| Core to core (20 ns requirement) | -3.593 ns | -2.821 ns | -3.979 ns |
+| Core to BRAM (10 ns requirement) | -6.846 ns | -7.147 ns | -8.237 ns |
+| BRAM to core (10 ns requirement) | -3.703 ns | -3.361 ns | -4.715 ns |
 
-New reports, checkpoints, source snapshots, input hashes, device utilization,
-and per-clock-pair timing are in `sim/build/vivado_soc_muldiv/`, including
+Hold and pulse-width timing pass (minimum slacks +0.030 ns and +3.000 ns).
+There are no unclocked registers, unconstrained internal endpoints, or valid
+timing exceptions; two external input ports and 19 output ports still have no
+external delay budgets. All implemented RTL snapshots and recorded input hashes
+match the sources used to launch the build. This run does not establish board
+functionality or a supported operating frequency. The earlier core-only OOC
+closure result does not establish timing closure for the current full SoC.
+
+Instruction latency is measured separately in the atomic latency table above:
+LR.W and successful SC.W occupy MEM for five core cycles, reservation-failed
+SC.W for three, and each AMO.W for seven, without external stalls. Their atomic
+request-to-response-valid latencies are three, three, one, and five cycles,
+respectively. These simulation cycle counts and the CoreMark results are not
+measured board performance; converting them to time at 50 MHz would assume a
+clock configuration that has not passed setup timing.
+
+Current reports, checkpoints, source snapshots, input hashes, device utilization,
+and per-clock-pair timing are in `sim/build/vivado_soc_rv32a/`, including
 `routed.dcp`, `timing_routed.rpt`, `critical_paths.rpt`, `utilization_device.rpt`,
-`clock_paths.tsv`, and `analysis.json`. The earlier reports remain preserved in
-`sim/build/vivado_soc/`; both directories are ignored by Git.
+`clock_paths.tsv`, and `analysis.json`. Reproduce synthesis and implementation with:
+
+```bash
+vivado -mode batch -source scripts/implement_soc.tcl -tclargs sim/build/vivado_soc_rv32a nexys4
+```
+
+Use a fresh output directory to preserve an existing run. Earlier reports remain
+in `sim/build/vivado_soc_muldiv/` and `sim/build/vivado_soc/`; all three build
+directories are ignored by Git.
 
 The current wrapper does not implement all declared MMIO signals: GPIO/display
 writes and UART RX reads/acknowledgement are incomplete, and unused RX logic is
