@@ -148,8 +148,9 @@ advisories.
 
 Core reports, source snapshots, the flow script, and checkpoints are in
 `sim/build/vivado_core_muldiv/`. These are internal core timing results with
-external I/O unconstrained. **The full SoC has not been rerouted for this change**;
-the older SoC timing results below do not describe the DSP-based RTL.
+external I/O unconstrained. The full SoC was subsequently rerouted with the
+DSP-based RTL; its setup timing remains negative at 50/100 MHz, as detailed in
+the full-SoC results below. Core-only closure does not establish SoC closure.
 
 ### Data Forwarding
 
@@ -519,30 +520,54 @@ specified, so internal timing results alone do not constitute complete board
 interface signoff. The build ends with a routed checkpoint and timing,
 utilization, clock-interaction, exception, and DRC reports.
 
-The measured full-SoC run on 2026-11-17 completed synthesis and routed all
-23,873 routable nets, with no black boxes and no routing or DRC errors. Its
-setup timing does **not** close at the requested 50/100 MHz configuration:
+The full-SoC rerun on 2026-11-17 used DSP-based mul/div RTL from `9c41c06`,
+the same board, IP configuration, clock constraints, and default implementation
+flow. It completed synthesis with no black boxes and fully routed all 22,007
+routable nets with zero routing errors. There are no DRC errors; six DSP
+pipelining advisory warnings remain. Setup timing still does **not** close at
+the requested 50 MHz core / 100 MHz BRAM configuration:
 
-| Full-SoC post-route metric | Result |
-|---|---:|
-| Worst setup slack | -6.846 ns |
-| Total negative setup slack | -3508.618 ns |
-| Setup-failing endpoints | 2,627 |
-| Worst hold slack | +0.036 ns (zero failing endpoints) |
-| LUTs | 21,766 |
-| Flip-flops | 8,103 |
-| RAMB36 / RAMB18 | 12 / 1 |
+| Full-SoC post-route metric | Before DSP mul/div | DSP mul/div |
+|---|---:|---:|
+| Worst setup slack | -6.846 ns | -7.147 ns |
+| Total negative setup slack | -3508.618 ns | -3603.940 ns |
+| Setup-failing endpoints | 2,627 | 2,546 |
+| Worst hold slack | +0.036 ns | +0.040 ns |
+| Hold-failing endpoints | 0 | 0 |
+| LUTs | 21,766 | 19,767 |
+| Flip-flops | 8,103 | 7,723 |
+| DSP48E1 | 0 | 4 |
+| RAMB36 / RAMB18 | 12 / 1 | 12 / 1 |
 
-The worst path starts at `soc_top_inst/core_inst/ex_mem_reg0/alu_out_mem_reg[2]`,
-passes through PMP permission and store-data qualification, and ends at a DMEM
-BRAM data input (`DIADI[6]`). The 50 MHz-to-100 MHz crossing has a 10 ns setup
-requirement and a 16.130 ns datapath delay (4.570 ns logic, 11.560 ns routing).
-The reverse BRAM-to-core direction has WNS -3.703 ns. The core's 50 MHz domain
-also has intra-clock WNS -3.593 ns in this integrated placement. Consequently,
-the earlier positive core-only OOC result does not establish SoC timing closure.
-There are no unconstrained internal endpoints; two external input ports and
-19 output ports still have no external delay budgets. The routed checkpoint
-and detailed reports are in `sim/build/vivado_soc/`.
+The new SoC saves 1,999 LUTs (9.18%) and 380 flip-flops (4.69%), at a cost of
+four DSP48E1s. On `xc7a100t`, it occupies 31.18% of LUTs, 6.09% of flip-flops,
+1.67% of DSPs, and 9.26% of BRAM capacity (12.5 equivalent RAMB36 tiles).
+Smaller area and faster multiplication have not closed the SoC memory path.
+
+The worst path now starts at
+`soc_top_inst/core_inst/ex_mem_reg1/alu_out_mem_reg[2]`, passes through PMP
+permission and store-data qualification, and ends at the DMEM BRAM data input
+`ramloop[3].../DIADI[5]`. Its core-to-BRAM crossing has a 10 ns setup requirement
+and a 16.423 ns datapath delay (4.463 ns logic, 11.960 ns routing), with 19 logic
+levels. This remains outside the multiplier datapath.
+
+| Clock direction, post-route WNS | Before DSP mul/div | DSP mul/div |
+|---|---:|---:|
+| Core to core (20 ns requirement) | -3.593 ns | -2.821 ns |
+| Core to BRAM (10 ns requirement) | -6.846 ns | -7.147 ns |
+| BRAM to core (10 ns requirement) | -3.703 ns | -3.361 ns |
+
+Thus, the improved core-only OOC result does not establish SoC timing closure.
+Hold and pulse-width timing pass. There are no unconstrained internal
+endpoints or valid timing exceptions; two external input ports and 19 output
+ports still have no external delay budgets. All implemented RTL snapshots
+match the source used to launch the build; this rerun changes no RTL.
+
+New reports, checkpoints, source snapshots, input hashes, device utilization,
+and per-clock-pair timing are in `sim/build/vivado_soc_muldiv/`, including
+`routed.dcp`, `timing_routed.rpt`, `critical_paths.rpt`, `utilization_device.rpt`,
+`clock_paths.tsv`, and `analysis.json`. The earlier reports remain preserved in
+`sim/build/vivado_soc/`; both directories are ignored by Git.
 
 The current wrapper does not implement all declared MMIO signals: GPIO/display
 writes and UART RX reads/acknowledgement are incomplete, and unused RX logic is
