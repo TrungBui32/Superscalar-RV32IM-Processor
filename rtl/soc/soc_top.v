@@ -675,48 +675,28 @@ localparam COL_WIDTH = 8;
 ////----------------------------------------------------------------
 //// UART read / write
 ////----------------------------------------------------------------
-always @(*) begin
-    dec_UART_TX = 1'b0;
-    if(ALUResult_pipe0[31:MMIO_DEPTH_BITS] == MMIO_BASE[31:MMIO_DEPTH_BITS] && ALUResult_pipe0[MMIO_DEPTH_BITS-1:2] == UART_TX_OFF[MMIO_DEPTH_BITS-1:2]) begin
-        dec_UART_TX = 1'b1;
-    end
-    
-    if(ALUResult_pipe1[31:MMIO_DEPTH_BITS] == MMIO_BASE[31:MMIO_DEPTH_BITS] && ALUResult_pipe1[MMIO_DEPTH_BITS-1:2] == UART_TX_OFF[MMIO_DEPTH_BITS-1:2]) begin
-        dec_UART_TX = 1'b1;
-    end
-end
+wire uart_tx_address0 = ALUResult_pipe0 == MMIO_BASE + UART_TX_OFF;
+wire uart_tx_address1 = ALUResult_pipe1 == MMIO_BASE + UART_TX_OFF;
 
 reg[7:0] UART_TX_buf;
 reg UART_TX_valid_buf;
 
 always @(posedge clk1) begin
-	UART_TX_valid <= UART_TX_valid_buf; // update the output register with the buffered value from the previous cycle
-    UART_TX <= UART_TX_buf; // update the output register with the buffered value from the previous cycle
-	// if (MemWrite_out_pipe0 && dec_UART_TX && UART_TX_ready)
-	// begin
-	// 	UART_TX <= WriteData_out_pipe0[7:0];
-	// 	UART_TX_valid <= 1'b1;
-	// end
-	// else if(MemWrite_out_pipe1 && dec_UART_TX && UART_TX_ready)
-	// begin
-	//    UART_TX <= WriteData_out_pipe1[7:0];
-	//    UART_TX_valid <= 1'b1;
-	// end
-end
-
-
-always @(posedge clk1) begin
-    UART_TX_valid_buf <= 1'b0;
-    if (MemWrite_out_pipe0 && dec_UART_TX && UART_TX_ready)
-	begin
-		UART_TX_buf <= WriteData_out_pipe0[7:0];
-		UART_TX_valid_buf <= 1'b1;
-	end
-	else if(MemWrite_out_pipe1 && dec_UART_TX && UART_TX_ready)
-	begin
-	   UART_TX_buf <= WriteData_out_pipe1[7:0];
-	   UART_TX_valid_buf <= 1'b1;
-	end
+    if (RESET) begin
+        UART_TX_valid <= 1'b0; UART_TX <= 0;
+        UART_TX_valid_buf <= 1'b0; UART_TX_buf <= 0;
+    end else begin
+        UART_TX_valid <= UART_TX_valid_buf;
+        UART_TX <= UART_TX_buf;
+        UART_TX_valid_buf <= 1'b0;
+        if (MemWrite_out_pipe0 && uart_tx_address0 && UART_TX_ready) begin
+            UART_TX_buf <= WriteData_out_pipe0[7:0];
+            UART_TX_valid_buf <= 1'b1;
+        end else if (MemWrite_out_pipe1 && uart_tx_address1 && UART_TX_ready) begin
+            UART_TX_buf <= WriteData_out_pipe1[7:0];
+            UART_TX_valid_buf <= 1'b1;
+        end
+    end
 end
 
 ////----------------------------------------------------------------

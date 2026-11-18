@@ -29,6 +29,7 @@ def run(name,source,args=()):
     symbols={r.split()[-1]:int(r.split()[0],16) for r in nm.splitlines() if len(r.split())==3}
     command([prefix+'objcopy','-O','binary',elf,binary]);data=binary.read_bytes();data+=b'\0'*(-len(data)%4)
     image.write_text('\n'.join(f'{int.from_bytes(data[i:i+4],"little"):08x}' for i in range(0,len(data),4))+'\n')
+    if callable(args): args=args(symbols)
     for seed in [0,1,7,42]:
         out=command(['vvp',a.build/'core',f'+mem={image}',f'+tohost={symbols["tohost"]:x}',f'+seed={seed}',*args])
         (a.build/f'{name}.{seed}.log').write_text(out)
@@ -112,5 +113,56 @@ if a.suite in ['access','all']:
 '''
             if name=='fetch': source=source.replace('la s4,fault',f'li s4,{0x2000+slot*4}').replace('li s3,8192',f'li s3,{0x2000+slot*4}')+'    .org 0x2000\n    nop\n    nop\n'
             run(f'{name}_p{slot}',source+POST,[f'+mode={mode}',f'+bad_addr={bad:x}'] if bad is not None else [f'+bad_pc={0x2000+slot*4:x}'])
+if a.suite in ['precision','all']:
+    command(['iverilog','-g2012','-s','tb_machine_soc_precision','-o',a.build/'soc',
+             'tests/machine/tb_soc.sv','tests/machine/soc_models.sv',
+             *sorted(Path('rtl/core').glob('*.v')),*sorted(Path('rtl/soc').glob('*.v'))])
+    print(command(['vvp',a.build/'soc']).strip(),flush=True)
+    # The pair is aligned and independent so both slots can reach MEM together.
+    pairs=[
+        ('older_alu','addi s1,zero,17','lw a3,0(a0)','li t0,17; bne s1,t0,fail'),
+        ('older_store','sw a1,0(a4)','lw a3,0(a0)','lw t0,0(a4); bne t0,a1,fail'),
+        ('older_load','lw s1,4(a4)','lw a3,0(a0)','li t0,0; bne s1,t0,fail'),
+        ('older_mmio','sw a1,0(a4)','lw a3,0(a0)','lw t0,0(a4); li t1,1; bne t0,t1,fail; sw zero,0(a4)'),
+        ('younger_store','lw a3,0(a0)','sw a1,0(a4)','lw t0,0(a4); bnez t0,fail'),
+        ('younger_alu','lw a3,0(a0)','addi s1,zero,99','bnez s1,fail'),
+        ('younger_csr','lw a3,0(a0)','csrw mscratch,a1','csrr t0,mscratch; bnez t0,fail'),
+        ('two_faults','lw a3,0(a0)','sw a1,0(a0)','li t0,0x5eed; bne a3,t0,fail')]
+    for name,older,younger,check in pairs:
+        younger_fault=name.startswith('older_')
+        source=PRE+('    li a1,1\n' if name=='older_mmio' else '')+f"    li a4,{0x02000000 if name=='older_mmio' else 0x5000}\n"
+        source+='    li s2,5\n    li s3,0x6000\n    la s4,fault\n    la s5,resume\n    .balign 8\n'
+        source+=(f'    {older}\nfault:\n    {younger}\n' if younger_fault else f'fault:\n    {older}\n    {younger}\n')
+        source+="""resume:
+    li t0,1
+    bne s6,t0,fail
+"""+f'    {check}\n    j pass\n'
+        source+="""handler:
+    csrr t0,mcause
+    bne t0,s2,fail
+    csrr t0,mtval
+    bne t0,s3,fail
+    csrr t0,mepc
+    bne t0,s4,fail
+    addi s6,s6,1
+    csrw mepc,s5
+    mret
+"""
+        run('precision_'+name,source+POST,['+bad_addr=6000']+(['+timer'] if name=='older_mmio' else []))
+    source=PRE+"""    .balign 8
+    beq zero,zero,resume
+wrong:
+    lw a3,0(a0)
+    sw a1,0(a0)
+resume:
+    bnez s6,fail
+    li t0,0x5eed
+    bne a3,t0,fail
+    j pass
+handler:
+    j fail
+"""
+    run('precision_wrong_path',source+POST,lambda symbols: ['+bad_addr=6000',f'+bad_pc={symbols["wrong"]:x}'])
+
 # Additional suites are appended below.
 (a.build/'results.json').write_text(json.dumps(results,indent=2)+'\n')
