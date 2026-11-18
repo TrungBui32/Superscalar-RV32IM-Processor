@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--build',type=Path,default=Path('sim/build/machine'))
-p.add_argument('--suite',choices=['access','precision','integration','all'],default='all')
+p.add_argument('--suite',choices=['access','precision','csr','integration','all'],default='all')
 a=p.parse_args();a.build.mkdir(parents=True,exist_ok=True)
 prefix=os.environ.get('RISCV_PREFIX','riscv64-unknown-elf-')
 def command(args):
@@ -163,6 +163,24 @@ handler:
     j fail
 """
     run('precision_wrong_path',source+POST,lambda symbols: ['+bad_addr=6000',f'+bad_pc={symbols["wrong"]:x}'])
+
+if a.suite in ['csr','all']:
+    for top,tb,rtl in [
+        ('tb_machine_csr','tests/machine/tb_csr.sv',['rtl/core/csr.v']),
+        ('tb_machine_timer','tests/machine/tb_timer.sv',['rtl/soc/machine_timer.v'])]:
+        command(['iverilog','-g2012','-s',top,'-o',a.build/top,tb,*rtl])
+        out=command(['vvp',a.build/top]);print(out.strip(),flush=True)
+        (a.build/(top+'.log')).write_text(out)
+
+if a.suite in ['csr','all']:
+    command(['iverilog','-g2012','-s','tb_machine_mode','-o',a.build/'privileged',
+             'tests/machine/tb_privileged.sv',*sorted(Path('rtl/core').glob('*.v'))])
+    cases='ecall ebreak illegal zero system unsupported load_align store_align jump_align fence fence_pipe1 mret mret_pipe1 counters timer software external priority vectored retrigger irq_masked irq_global_masked sync_irq trap_stall'.split()
+    for case in cases:
+        for slot in ([0,1] if case in 'ecall ebreak illegal zero system unsupported load_align store_align jump_align trap_stall'.split() else [0]):
+            out=command(['vvp',a.build/'privileged',f'+case={case}',f'+slot={slot}'])
+            (a.build/f'privileged_{case}.{slot}.log').write_text(out)
+            print(out.strip(),flush=True)
 
 # Additional suites are appended below.
 (a.build/'results.json').write_text(json.dumps(results,indent=2)+'\n')

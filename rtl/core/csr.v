@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-// RV32IM, M-mode only. Unsupported S/H CSRs retain their address constants
+// RV32IMA, M-mode only. Unsupported S/H CSRs retain their address constants
 // below but raise illegal instruction; no unsupported privilege mode is advertised.
 module csr #(
     parameter [31:0] HART_ID = 0
