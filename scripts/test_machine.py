@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Architectural M-mode access-fault, precision and integration regressions."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,9 @@ def command(args):
     return r.stdout
 command(['iverilog','-g2012','-s','tb_machine_core','-o',a.build/'core',
          'tests/machine/tb_core.sv',*sorted(Path('rtl/core').glob('*.v')),'rtl/soc/machine_timer.v'])
+source_files=[Path(__file__),*Path('rtl/core').glob('*.v'),*Path('rtl/soc').glob('*.v'),
+              *Path('tests/machine').glob('*')]
+source_hashes={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in source_files if p.is_file()}
 results=[]
 def run(name,source,args=()):
     src=a.build/(name+'.S');elf=a.build/(name+'.elf');binary=a.build/(name+'.bin');image=a.build/(name+'.hex')
@@ -34,6 +38,7 @@ def run(name,source,args=()):
         out=command(['vvp',a.build/'core',f'+mem={image}',f'+tohost={symbols["tohost"]:x}',f'+seed={seed}',*args])
         (a.build/f'{name}.{seed}.log').write_text(out)
         assert 'PASS' in out,out
+        if name=='context_switch': assert 'traps=12 returns=11' in out,out
         results.append(dict(test=name,seed=seed,output=out.strip().splitlines()[-1]))
         print(name,seed,results[-1]['output'],flush=True)
 
@@ -182,5 +187,11 @@ if a.suite in ['csr','all']:
             (a.build/f'privileged_{case}.{slot}.log').write_text(out)
             print(out.strip(),flush=True)
 
-# Additional suites are appended below.
+if a.suite in ['integration','all']:
+    run('context_switch',Path('tests/machine/context_switch.S').read_text(),['+timer','+bad_addr=6000'])
+
+assert all(hashlib.sha256(Path(p).read_bytes()).hexdigest()==h for p,h in source_hashes.items()), 'Sources changed while testing'
+(a.build/'inputs.json').write_text(json.dumps(dict(source_sha256=source_hashes,
+    compiler=command([prefix+'gcc','--version']).splitlines()[0],
+    rtl_commit=command(['git','rev-parse','HEAD']).strip()),indent=2)+'\n')
 (a.build/'results.json').write_text(json.dumps(results,indent=2)+'\n')

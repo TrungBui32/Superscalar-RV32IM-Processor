@@ -197,8 +197,8 @@ store/AMO faults. SC still undergoes permission checks when no reservation
 exists. AMOs require both read and write PMP permissions before any access.
 `ATOMIC_BASE`/`ATOMIC_MASK` select the supported PMA region (defaults describe a
 flat abstract RAM). The SoC sets it to its actual 16 KiB DMEM backing RAM,
-`0x10010000` through `0x10013fff`. Atomics to MMIO, ROM, or the remaining DMEM
-aliases raise access faults. The current platform has one hart and no DMA;
+`0x10010000` through `0x10013fff`. Atomics to MMIO, ROM, or addresses beyond
+the physical DMEM raise access faults. The current platform has one hart and no DMA;
 adding another memory master requires global arbitration and reservation
 invalidation events, not just an additional local atomic unit.
 
@@ -462,8 +462,10 @@ that instruction's automatic increment. `time/timeh` read the SoC timer.
 Synchronous traps cover illegal encodings/CSR accesses, M-mode ECALL, EBREAK,
 and misaligned instruction targets. Misaligned loads/stores can be split into
 byte transactions as described below; regions that disallow splitting raise
-load/store address-misaligned traps. PMP denials raise instruction/load/store
-access faults. Trap entry updates
+load/store address-misaligned traps. PMP denials and memory-interface errors
+raise instruction/load/store access faults. Fetch faults follow their instruction
+through the pipeline; split accesses retain the failing byte address, and atomic
+read/write errors propagate through the atomic response. Trap entry updates
 `mepc`, `mcause`, `mtval`, and MIE/MPIE; `MRET` restores interrupt state and
 resumes at `mepc`. `FENCE` serializes older operations; `FENCE.I` also flushes
 prefetched instructions. `WFI` currently executes as a legal no-op.
@@ -649,19 +651,20 @@ yosys -Q -s formal/trap_squash.ys
 python3 formal/pipeline_payload_equivalence.py --reference 426e4e0
 ```
 
-Run the open-source functional regressions from any directory:
+Run the machine-mode functional regressions from the repository root:
 
 ```bash
-./sim/run_csr_tests.sh
+python3 scripts/test_machine.py --suite all
 ```
 
-They require Icarus Verilog (`iverilog`, `vvp`) and cover decode, normalized
-forwarding, pipeline hazards, randomized architectural scoreboards, trap/MRET,
-interrupt masking/priority/vectoring/retriggering, counter behavior, and actual
-CPU + MMIO timer/software interrupt handlers. They do not certify ISA compliance
-or FPGA timing. U/S-mode, MMU, external bus access-fault inputs, and a device interrupt
-controller are not implemented. The complete board wrapper uses generated
-BRAM/clock/counter IP; the full-SoC build script below recreates these IPs.
+The machine suite requires Icarus Verilog (`iverilog`, `vvp`) and a RISC-V GNU
+cross compiler. It covers access faults, precise dual-issue side effects, CSR
+address legality and masks, trap/MRET, interrupt masking/priority/vectoring,
+counters, timer MMIO and a two-task M-mode context-switch program. The full-SoC
+UART test uses behavioral models of the configured synchronous FPGA IP.
+These tests do not certify complete ISA compliance or FPGA timing. U/S-mode,
+MMU and a device interrupt controller are not implemented. The complete board
+wrapper uses generated BRAM/clock/counter IP; the full-SoC build script below recreates these IPs.
 
 ---
 
@@ -803,9 +806,11 @@ directories are ignored by Git.
 The current wrapper does not implement all declared MMIO signals: GPIO/display
 writes and UART RX reads/acknowledgement are incomplete, and unused RX logic is
 pruned. The optional RX synchronizer constraint is guarded when its registers
-are absent. DMEM has a 64 KiB decode window backed by 16 KiB of storage, so
-addresses in that window alias every 16 KiB. A completed implementation describes
-this connected RTL; it does not establish firmware or board functionality.
+are absent. The address checker limits DMEM accesses to its physical 16 KiB
+(`0x10010000`–`0x10013fff`); former aliases now raise access faults. Fetch is
+limited to the 32 KiB IROM. Timer registers, UART TX/status and the cycle counter
+are decoded with access permissions; unimplemented MMIO accesses raise faults.
+A completed implementation describes this connected RTL; it does not establish firmware or board functionality.
 
 ---
 
