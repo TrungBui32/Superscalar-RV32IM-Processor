@@ -6,6 +6,8 @@ module if_id_reg
   input  wire        en,              // 0=hold (stall IF/ID)
   input  wire        flush,           // 1=insert NOP into ID
 
+  input wire fetch_fault_if,
+  output reg fetch_fault_id,
   input wire valid_if,
   output reg valid_id,
 
@@ -39,6 +41,10 @@ module if_id_reg
 );
   localparam [31:0] NOP = 32'h0000_0000; // ADD x0,x0,x0
 
+  always @(posedge clk) begin
+    if (rst || flush) fetch_fault_id <= 1'b0;
+    else if (en) fetch_fault_id <= fetch_fault_if;
+  end
   always @(posedge clk) begin
     if (rst) begin
       instr_id   <= NOP;

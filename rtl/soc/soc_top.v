@@ -151,6 +151,14 @@ wire locked;
 wire clk1 = clk_out1;
 wire clk2 = clk_out2;
 
+wire [1:0] fetch_fault, data_fault, data_write_intent;
+wire [2:0] data_size0, data_size1;
+soc_access_check address_check(
+    .pc(PC), .address0(ALUResult_pipe0), .address1(ALUResult_pipe1),
+    .size0(data_size0), .size1(data_size1), .write_intent(data_write_intent),
+    .fetch_fault(fetch_fault), .data_fault(data_fault)
+);
+
 // Machine timer MMIO uses the same byte-lane formatting as DMEM stores.
 wire [31:0] timer_rdata_pipe0, timer_rdata_pipe1;
 wire timer_hit_pipe0, timer_hit_pipe1, timer_irq, timer_software_irq;
@@ -294,7 +302,7 @@ end
 
 
 assign dmem_addrb = (ALUResult_pipe1 - DMEM_BASE) >> 2;
-assign dmem_enb = ((ALUResult_pipe1[DATA_WIDTH-1:16] == DMEM_BASE[DATA_WIDTH-1:16]) & (LwSizeSel_pipe1 != 5'b00000 || MemWrite_out_pipe1 != 3'b000))? 1'b1: 1'b0;	
+assign dmem_enb = ((ALUResult_pipe1[31:14] == DMEM_BASE[31:14]) & (LwSizeSel_pipe1 != 5'b00000 || MemWrite_out_pipe1 != 3'b000))? 1'b1: 1'b0;
 assign dmem_dinb = dmem_dinb_reg;
 assign dmem_web = dmem_web_reg;
   
@@ -312,7 +320,7 @@ end
 
 assign dmem_addra = (ALUResult_pipe0 - DMEM_BASE) >> 2;
 assign dmem_wea = dmem_wea_reg;
-assign dmem_ena = ((ALUResult_pipe0[DATA_WIDTH-1:16] == DMEM_BASE[DATA_WIDTH-1:16]) & (LwSizeSel_pipe0 != 5'b00000 || MemWrite_out_pipe0 != 3'b000))? 1'b1: 1'b0;					 
+assign dmem_ena = ((ALUResult_pipe0[31:14] == DMEM_BASE[31:14]) & (LwSizeSel_pipe0 != 5'b00000 || MemWrite_out_pipe0 != 3'b000))? 1'b1: 1'b0;
 assign dmem_dina = dmem_dina_reg;
 
 always @(*) begin
@@ -724,6 +732,9 @@ core #(.PC_INIT(PC_INIT), .ATOMIC_BASE(DMEM_BASE),
        .MISALIGNED_MASK(32'hffff0000)) core_inst(
     .irq_software(timer_software_irq), .irq_timer(timer_irq), .irq_external(1'b0),
     .time_value(machine_time),
+    .imem_fault(fetch_fault), .dmem_fault(data_fault),
+    .dmem_write_intent(data_write_intent),
+    .dmem_size_pipe0(data_size0), .dmem_size_pipe1(data_size1),
 	.CLK(clk1),			// use 100MHz
 	.RESET(RESET),
 	.Instr_pipe0(Instr_pipe0),

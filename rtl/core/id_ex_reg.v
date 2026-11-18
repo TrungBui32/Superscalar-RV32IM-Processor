@@ -9,6 +9,8 @@ module id_ex_reg
   input wire [31:0] rs1_forward_ex,
   input wire [31:0] rs2_forward_ex,
 
+  input wire fetch_fault_id,
+  output reg fetch_fault_ex,
   input wire  valid_id,
   output reg  valid_ex,
   input wire [31:0] instruction_id,
@@ -93,6 +95,10 @@ module id_ex_reg
   output reg         is_ebreak_ex
 );
   // Flush inserts a bubble by clearing validity and side-effect controls.
+  always @(posedge clk) begin
+    if (rst || flush) fetch_fault_ex <= 1'b0;
+    else if (en) fetch_fault_ex <= fetch_fault_id;
+  end
   always @(posedge clk) begin
     if (rst) begin
       illegal_ex <= 'b0;

@@ -22,7 +22,7 @@ module coremark_sim(input clk, input rst, output reg done, output reg failed,
     wire [31:0] r0=read_data(a0),r1=read_data(a1);
     core #(.PC_INIT(32'h00400000),.ATOMIC_BASE(32'h10010000),.ATOMIC_MASK(32'hffffc000),
            .MISALIGNED_BASE(32'h10010000),.MISALIGNED_MASK(32'hffff0000)) dut(
-        .CLK(clk),.RESET(rst),.locked(1'b1),.imem_ready(1'b1),.dmem_ready(1'b1),
+        .CLK(clk),.RESET(rst),.locked(1'b1),.imem_fault(2'b0), .dmem_fault(2'b0), .imem_ready(1'b1),.dmem_ready(1'b1),
         .irq_software(1'b0),.irq_timer(1'b0),.irq_external(1'b0),.time_value(cycles),
         .Instr_pipe0(instruction(pc)),.Instr_pipe1(instruction(pc+4)),
         .ReadData_in_pipe0(r0),.ReadData_in_pipe1(r1),.PC(pc),

@@ -5,6 +5,8 @@ module ex_mem_reg(
   input  wire        en,              // 0=hold
   input  wire        flush,           // 1=bubble (zero control)
 
+  input wire fetch_fault_ex,
+  output reg fetch_fault_mem,
   input wire  valid_ex,
   output reg  valid_mem,
   input wire [31:0] instruction_ex,
@@ -79,6 +81,10 @@ module ex_mem_reg(
   output reg [31:0] branch_pred_target_mem,
   output reg is_ebreak_mem
 );
+  always @(posedge clk) begin
+    if (rst || flush) fetch_fault_mem <= 1'b0;
+    else if (en) fetch_fault_mem <= fetch_fault_ex;
+  end
   always @(posedge clk) begin
     if (rst) begin
       illegal_mem <= 'b0;

@@ -8,6 +8,8 @@ module misaligned_access(
     input [2:0] size,
     input [31:0] address, input [31:0] store_data,
     input [31:0] read_data,
+    input bus_error,
+    output reg fault,
     output busy,
     output [31:0] bus_address,
     output [31:0] bus_store_data,
@@ -20,7 +22,9 @@ module misaligned_access(
     assign bus_store_data=store_data >> (index*8);
     always @(posedge clk) begin
         if (rst || !request || retire) begin
-            index<=0; done<=0; load_data<=0;
+            index<=0; done<=0; load_data<=0; fault<=0;
+        end else if (step && !done && bus_error) begin
+            done<=1; fault<=1;
         end else if (step && !done) begin
             load_data[index*8 +:8]<=read_data[7:0];
             if ({1'b0,index}+3'd1==size) done<=1;

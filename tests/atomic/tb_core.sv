@@ -22,7 +22,7 @@ module tb_atomic_core;
     wire [31:0] rdata1=read_word(addr1)>>(addr1[1:0]*8);
     wire [63:0] ticks={32'b0,cycles[31:0]};
     core #(.PC_INIT(BASE),.ATOMIC_BASE(BASE),.ATOMIC_MASK(32'hfffc0000)) dut(
-        .CLK(clk),.RESET(rst),.locked(1'b1),.imem_ready(imem_ready),.dmem_ready(dmem_ready),
+        .CLK(clk),.RESET(rst),.locked(1'b1),.imem_fault(2'b0), .dmem_fault(2'b0), .imem_ready(imem_ready),.dmem_ready(dmem_ready),
         .irq_software(1'b0),.irq_timer(irq),.irq_external(1'b0),.time_value(ticks),
         .Instr_pipe0(instr0),.Instr_pipe1(instr1),.ReadData_in_pipe0(rdata0),.ReadData_in_pipe1(rdata1),
         .PC(pc),.MemWrite_out_pipe0(we0),.MemWrite_out_pipe1(we1),

@@ -5,7 +5,7 @@ reg [31:0] random_state=32'h41729;always #5 clk=~clk;
 reg[31:0]rom[0:63];wire[31:0]pc;
 integer i,cycles=0,accepts=0,stall=0,slot=0,redirect=0,mixed=0,junk;
 core #(.PC_INIT(0), .DEBUG_HALT_ON_EBREAK(1)) dut(
-    .CLK(clk), .RESET(rst), .locked(1'b1), .imem_ready(ir), .dmem_ready(dr),
+    .CLK(clk), .RESET(rst), .locked(1'b1), .imem_fault(2'b0), .dmem_fault(2'b0), .imem_ready(ir), .dmem_ready(dr),
     .irq_software(1'b0), .irq_timer(1'b0), .irq_external(1'b0), .time_value(64'b0),
     .Instr_pipe0(rom[pc[7:2]]), .Instr_pipe1(rom[pc[7:2]+6'd1]),
     .ReadData_in_pipe0(32'b0), .ReadData_in_pipe1(32'b0), .PC(pc)

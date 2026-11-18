@@ -9,7 +9,7 @@ module tb_muldiv_irq;
     reg [31:0] saved_pc, saved_cause;
     core #(.PC_INIT(0), .DEBUG_HALT_ON_EBREAK(1)) dut(
         .CLK(clk), .RESET(rst), .locked(1'b1),
-        .imem_ready(1'b1), .dmem_ready(data_ready),
+        .imem_fault(2'b0), .dmem_fault(2'b0), .imem_ready(1'b1), .dmem_ready(data_ready),
         .irq_software(1'b0), .irq_timer(irq), .irq_external(1'b0), .time_value(64'b0),
         .Instr_pipe0(rom[pc[10:2]]), .Instr_pipe1(rom[pc[10:2]+9'd1]),
         .ReadData_in_pipe0(32'b0), .ReadData_in_pipe1(32'b0), .PC(pc)
