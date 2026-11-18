@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--build',type=Path,default=Path('sim/build/machine'))
-p.add_argument('--suite',choices=['access','precision','csr','integration','all'],default='all')
+p.add_argument('--suite',choices=['access','precision','csr','integration','supervisor','all'],default='all')
 a=p.parse_args();a.build.mkdir(parents=True,exist_ok=True)
 prefix=os.environ.get('RISCV_PREFIX','riscv64-unknown-elf-')
 def command(args):
@@ -186,6 +186,106 @@ if a.suite in ['csr','all']:
             out=command(['vvp',a.build/'privileged',f'+case={case}',f'+slot={slot}'])
             (a.build/f'privileged_{case}.{slot}.log').write_text(out)
             print(out.strip(),flush=True)
+
+if a.suite in ['supervisor','all']:
+    command(['iverilog','-g2012','-s','tb_supervisor_csr','-o',a.build/'supervisor_csr',
+             'tests/machine/tb_supervisor_csr.sv','rtl/core/csr.v'])
+    print(command(['vvp',a.build/'supervisor_csr']).strip(),flush=True)
+    # name, mode, operation, cause, tval expression, setup, delegated, result
+    cases=[
+        ('ecall_u_m',0,'ecall',8,'0','',False,'marker'),
+        ('ecall_s_m',1,'ecall',9,'0','',False,'marker'),
+        ('ecall_u_s',0,'ecall',8,'0','li t0,256; csrw medeleg,t0',True,'marker'),
+        ('ecall_s_s',1,'ecall',9,'0','li t0,512; csrw medeleg,t0',True,'marker'),
+        ('csr_u',0,'csrr a3,sstatus',2,'instruction','',False,'marker'),
+        ('csr_s',1,'csrr a3,mstatus',2,'instruction','',False,'marker'),
+        ('mret_s',1,'mret',2,'instruction','',False,'marker'),
+        ('sret_u',0,'sret',2,'instruction','',False,'marker'),
+        ('tsr_s',1,'sret',2,'instruction','li t0,0x400000; csrs mstatus,t0',False,'marker'),
+        ('bare_tvm_satp_s',1,'csrr a3,satp; ebreak',3,'last','li t0,0x100000; csrs mstatus,t0',False,'zero'),
+        ('sfence_s_bare',1,'sfence.vma',2,'instruction','li t0,0x100000; csrs mstatus,t0',False,'marker'),
+        ('sfence_u',0,'sfence.vma',2,'instruction','',False,'marker'),
+        ('sfence_m_bare',3,'sfence.vma',2,'instruction','',False,'marker'),
+        ('wfi_u',0,'wfi',2,'instruction','',False,'marker'),
+        ('tw_wfi_s',1,'wfi',2,'instruction','li t0,0x200000; csrs mstatus,t0',False,'marker'),
+        ('counter_s_denied',1,'csrr a3,cycle',2,'instruction','',False,'marker'),
+        ('counter_u_denied',0,'csrr a3,cycle',2,'instruction','li t0,7; csrw mcounteren,t0',False,'marker'),
+        ('counter_s_ok',1,'csrr a3,time; ebreak',3,'last','li t0,7; csrw mcounteren,t0',False,'positive'),
+        ('counter_u_ok',0,'csrr a3,time; ebreak',3,'last','li t0,7; csrw mcounteren,t0; csrw scounteren,t0',False,'positive'),
+        ('pmp_s_load',1,'lw a3,0(a0)',5,'0x6000','li t0,0x1c; csrw pmpcfg0,t0',False,'marker'),
+        ('pmp_u_store',0,'sw a1,0(a0)',7,'0x6000','li t0,0x1d; csrw pmpcfg0,t0',False,'marker'),
+        ('pmp_s_fetch',1,'nop',1,'pc','csrw pmpcfg0,zero',False,'marker'),
+        ('mprv_u_load',3,'lw a3,0(a0)',5,'0x6000','li t0,0x1c; csrw pmpcfg0,t0; li t0,0x20000; csrw mstatus,t0',False,'marker'),
+        ('bare_s',1,'csrr a3,satp; bnez a3,fail; li t0,-1; csrw satp,t0; csrr a3,satp; bnez a3,fail; ebreak',3,'last','',False,'zero')]
+    supervisor_prelude=PRE.replace('la t0, handler','la t0, m_handler')+"""    la t0,s_handler
+    csrw stvec,t0
+    li t0,-1
+    csrw pmpaddr0,t0
+    li t0,0x1f
+    csrw pmpcfg0,t0
+    li s7,0
+"""
+    for name,mode,op,cause,tval,setup,delegated,result in cases:
+        pre=supervisor_prelude+'    '+setup+'\n'
+        if mode!=3:
+            pre+=f'    li t0,0x1800\n    csrc mstatus,t0\n    li t0,{mode<<11}\n    csrs mstatus,t0\n    la t0,entry\n    csrw mepc,t0\n    mret\n'
+        # No branch or context switch between entry and the faulting opcode.
+        ops=op.split('; ')
+        body='entry:\n'
+        for index,line in enumerate(ops):
+            if index==len(ops)-1:body+='fault:\n'
+            body+='    '+line+'\n'
+        body+='    j fail\n'
+        expected="""m_handler:
+    csrr t0,mcause
+    li t1,EXPECTED_CAUSE
+    bne t0,t1,fail
+    csrr t0,mepc
+    la t1,EXPECTED_PC
+    bne t0,t1,fail
+    csrr t0,mtval
+    TVAL_CHECK
+    csrr t0,mstatus
+    srli t0,t0,11
+    andi t0,t0,3
+    li t1,EXPECTED_PRIV
+    bne t0,t1,fail
+    li t0,EXPECTED_S_TRAPS
+    bne s7,t0,fail
+    RESULT_CHECK
+    j pass
+s_handler:
+    addi s7,s7,1
+    csrr t0,scause
+    li t1,ORIGINAL_CAUSE
+    bne t0,t1,fail
+    csrr t0,sepc
+    la t1,fault
+    bne t0,t1,fail
+    csrr t0,sstatus
+    andi t0,t0,0x102
+    li t1,EXPECTED_SPP
+    bne t0,t1,fail
+s_exit:
+    ebreak
+"""
+        original_tval='lw t1,0(t1)' if tval=='instruction' else ('la t1,fault' if tval in ['pc','last'] else f'li t1,{tval}')
+        if tval=='instruction':tvalcheck='la t1,fault; lw t1,0(t1); bne t0,t1,fail'
+        else:tvalcheck=original_tval+'; bne t0,t1,fail'
+        expected=expected.replace('EXPECTED_CAUSE',str(3 if delegated else cause)).replace('EXPECTED_PC','s_exit' if delegated else 'fault')
+        expected=expected.replace('TVAL_CHECK','la t1,s_exit; bne t0,t1,fail' if delegated else tvalcheck)
+        expected=expected.replace('EXPECTED_PRIV',str(1 if delegated else mode)).replace('EXPECTED_S_TRAPS',str(int(delegated)))
+        expected=expected.replace('ORIGINAL_CAUSE',str(cause)).replace('EXPECTED_SPP',str(0x100 if mode==1 else 0))
+        check='li t0,0x5eed; bne a3,t0,fail' if result=='marker' else 'blez a3,fail' if result=='positive' else 'bnez a3,fail'
+        expected=expected.replace('RESULT_CHECK',check)
+        run('supervisor_'+name,pre+body+expected+POST)
+
+if a.suite in ['supervisor','all']:
+    run('supervisor_roundtrip',Path('tests/machine/supervisor_roundtrip.S').read_text())
+    for pending,cause in [(2,1),(32,5),(512,9),(0x222,9)]:
+        source=Path('tests/machine/supervisor_interrupt.S').read_text()
+        source=source.replace('IRQ_PENDING',str(pending)).replace('IRQ_CAUSE',str(0x80000000|cause))
+        run(f'supervisor_interrupt_{pending:x}',source)
 
 if a.suite in ['integration','all']:
     run('context_switch',Path('tests/machine/context_switch.S').read_text(),['+timer','+bad_addr=6000'])

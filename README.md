@@ -37,7 +37,7 @@ Both pipes share a single register file and use two ports of the same DMEM. Stru
 | Atomic (A: Zaamo + Zalrsc) | LR.W, SC.W, AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W |
 | Branch | BEQ, BNE, BLT, BGE, BLTU, BGEU |
 | Jump | JAL, JALR |
-| System | ECALL, EBREAK, MRET, WFI |
+| System | ECALL, EBREAK, MRET, SRET, WFI |
 | CSR (Zicsr) | CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI |
 | Ordering | FENCE, FENCE.I (Zifencei) |
 
@@ -440,39 +440,59 @@ duration; their JSON results explicitly mark that condition.
 
 ---
 
-## M-mode CSR, traps, and interrupts
+## Privilege, CSRs, traps, and interrupts
 
-The core currently implements machine mode only. `misa` is fixed to RV32IMA
-(`0x40001101`); it does not advertise U/S, compressed, or floating-point
-instructions. S/H CSR address constants are retained in `csr.v` for future work,
-but accesses to those unimplemented CSRs trap instead of exposing placeholder
-registers. This is an intentional change from the earlier CSR-bank prototype.
+The core supports M/S/U privilege with physical addressing. `misa` is fixed to
+`0x40141101` (RV32IMA plus S/U); compressed, floating-point and hypervisor
+extensions are not advertised. Reset enters M-mode. CSR accesses check the
+current privilege, address existence and read-only encoding.
 
-Implemented machine CSRs include `mstatus`, `misa`, `mie`, `mtvec`, `mscratch`,
-`mepc`, `mcause`, `mtval`, and hardware-owned `mip`. `mstatus.MPP` is fixed to M;
-only MIE/MPIE are writable. `mtvec` supports Direct/Vectored modes, and `mepc`
-is aligned for IALIGN=32. `mstatush` and `mcounteren` read zero. Machine ID CSRs
-read zero on this single-hart, non-commercial implementation.
+Machine CSRs include `mstatus`, `misa`, `medeleg`, `mideleg`, `mie`, `mtvec`,
+`mcounteren`, `mscratch`, `mepc`, `mcause`, `mtval` and `mip`. Supervisor CSRs
+include `sstatus`, `sie`, `stvec`, `scounteren`, `sscratch`, `sepc`, `scause`,
+`stval`, `sip` and `satp`. `sstatus` shares SIE/SPIE/SPP with `mstatus`;
+`sie`/`sip` expose the delegated bits of `mie`/`mip`. Writes preserve backing
+bits outside each alias. `mstatush`, `menvcfg/menvcfgh` and `senvcfg` read zero.
+Machine ID CSRs read zero on the default single-hart implementation.
+
+`satp` supports **Bare only** and always reads zero. TVM, SUM and MXR are
+read-only zero; **Sv32, page-table walking and page faults are not implemented**.
+`SFENCE.VMA` currently traps as an illegal instruction, a permitted choice for
+Bare-only implementations. `MRET`/`SRET` restore privilege and interrupt state,
+clear MPRV when returning below M, and reset their previous-privilege field
+(MPP or SPP) to U. S-mode `SRET` is blocked by TSR. WFI is a no-op in M and
+in S with TW=0; it traps in U and in S with TW=1. `mtvec`/`stvec` support Direct/Vectored modes; EPCs use IALIGN=32.
+
+`medeleg` supports implemented synchronous causes 0–9; M-mode traps always
+remain in M. Delegated traps update SEPC/SCAUSE/STVAL and SIE/SPIE/SPP;
+other traps update MEPC/MCAUSE/MTVAL and MIE/MPIE/MPP. `mideleg` supports
+SSIP/STIP/SEIP. M-mode firmware can inject these pending bits through `mip`;
+S-mode can write only delegated SSIP through `sip`. Machine IRQ pins remain
+machine-level sources; no Sstc or external interrupt controller is provided.
+Machine-targeted IRQs can interrupt S/U regardless of MIE. Supervisor-targeted
+IRQs are masked in M, gated by SIE in S and individually enabled in U.
 
 The 64-bit `mcycle` and `minstret` counters include RV32 high-half CSRs and
 read-only `cycle`/`instret` aliases. `mcountinhibit` supports CY/IR. Faulted
 instructions and bubbles do not retire; explicit writes to `minstret` suppress
 that instruction's automatic increment. `time/timeh` read the SoC timer.
+`mcounteren` gates counter reads in S/U; U also requires `scounteren` permission.
 
-Synchronous traps cover illegal encodings/CSR accesses, M-mode ECALL, EBREAK,
+Synchronous traps cover illegal encodings/CSR accesses, ECALL from M/S/U, EBREAK,
 and misaligned instruction targets. Misaligned loads/stores can be split into
 byte transactions as described below; regions that disallow splitting raise
 load/store address-misaligned traps. PMP denials and memory-interface errors
 raise instruction/load/store access faults. Fetch faults follow their instruction
 through the pipeline; split accesses retain the failing byte address, and atomic
 read/write errors propagate through the atomic response. Trap entry updates
-`mepc`, `mcause`, `mtval`, and MIE/MPIE; `MRET` restores interrupt state and
-resumes at `mepc`. `FENCE` serializes older operations; `FENCE.I` also flushes
-prefetched instructions. `WFI` currently executes as a legal no-op.
+`mepc`/`mcause`/`mtval` or their supervisor counterparts. Trap returns resume
+at the corresponding EPC. `FENCE` serializes older operations; `FENCE.I` also flushes
+prefetched instructions. WFI behavior is privilege-dependent as described above.
 
 `irq_software`, `irq_timer`, and `irq_external` on `core` are synchronous,
-level-sensitive inputs. Eligible interrupts have priority external, software,
-then timer. The core drains older work and saves the next unexecuted PC before
+level-sensitive inputs. Higher-privilege targets have priority; within each
+target, standard interrupts follow MEI/MSI/MTI/SEI/SSI/STI priority. The core
+drains older work and saves the next unexecuted PC before
 entering the handler. The SoC connects software/timer IRQs to `machine_timer.v`;
 external IRQ is tied low until a device interrupt controller is integrated.
 
@@ -500,8 +520,10 @@ PMP provides 16 entries (`pmpcfg0`–`pmpcfg3`, `pmpaddr0`–`pmpaddr15`) with
 4-byte granularity and OFF, TOR, NA4, and NAPOT modes. The lowest matching entry
 must cover the whole access. Locked entries enforce R/W/X in M-mode; unlocked
 entries bypass permissions in M-mode. Configuration/address locks, including a
-locked TOR entry's preceding address register, remain set until reset. This does
-not add U/S modes or an MMU. The data bus carries 32-bit physical addresses.
+locked TOR entry's preceding address register, remain set until reset. S/U
+always enforce matching-entry permissions and deny unmatched accesses. MPRV
+applies MPP privilege to M-mode data accesses while fetch keeps current-mode
+permissions. The data bus carries 32-bit physical addresses.
 
 `pmp_decode.v` computes region bounds once for the four instruction/data checks.
 The checkers compare entries in parallel and select the lowest-numbered match.
@@ -662,8 +684,12 @@ cross compiler. It covers access faults, precise dual-issue side effects, CSR
 address legality and masks, trap/MRET, interrupt masking/priority/vectoring,
 counters, timer MMIO and a two-task M-mode context-switch program. The full-SoC
 UART test uses behavioral models of the configured synchronous FPGA IP.
-These tests do not certify complete ISA compliance or FPGA timing. U/S-mode,
-MMU and a device interrupt controller are not implemented. The complete board
+Supervisor regression covers privilege transitions, CSR aliases and access
+checks, delegated synchronous traps, vectored supervisor interrupts, MPRV and
+PMP enforcement, under four bus-stall patterns. Run only those tests with
+`python3 scripts/test_machine.py --suite supervisor`.
+These tests do not certify complete ISA compliance or FPGA timing. An MMU
+and a device interrupt controller are not implemented. The complete board
 wrapper uses generated BRAM/clock/counter IP; the full-SoC build script below recreates these IPs.
 
 ---

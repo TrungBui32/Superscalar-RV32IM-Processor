@@ -57,15 +57,15 @@ module tb_machine_mode;
             "ebreak":rom[8]=32'h00100073;
             "illegal":rom[8]=32'hffffffff;
             "zero":rom[8]=0;
-            "system":rom[8]=32'h10200073; // SRET is unsupported.
-            "unsupported":rom[8]=ci(2,2,'h100,0);
+            "system":rom[8]=32'h20200073; // Unsupported HRET encoding.
+            "unsupported":rom[8]=ci(2,2,'h600,0);
             "load_align":rom[8]={12'd2,5'b0,3'b010,5'd2,7'h03};
             "store_align":rom[8]=32'h00102123; // sw x1,2(x0)
             "jump_align":rom[8]=32'h0020006f; // jal x0,+2
             "fence":begin rom[8]=32'h0000100f;rom[10]=32'h0000000f;rom[11]=32'h10500073;end
             "fence_pipe1":begin rom[9]=32'h0000100f;rom[10]=ai(20,0,77);rom[11]=32'h0000000f;rom[12]=32'h10500073;end
             "mret","mret_pipe1":begin
-                rom[4]=ai(3,0,'h80);rom[5]=ci(1,0,'h300,3);
+                rom[4]=ai(3,0,'h80);rom[5]=ci(2,0,'h300,3);
                 rom[6]=ai(2,0,48);rom[7]=ci(1,0,'h341,2);rom[8]=32'h30200073;
                 rom[9]=ci(5,0,'h340,7);rom[12]=ai(20,0,77);
             end
@@ -110,13 +110,13 @@ module tb_machine_mode;
             if(traps != (scenario=="retrigger"?2:1))$fatal(1,"wrong interrupt count %0d",traps);
             if(saved_cause[0]!== (32'h80000000|irq_code))$fatal(1,"wrong interrupt cause %h",saved_cause[0]);
             if(saved_pc[0]!==32 && saved_pc[0]!==36)$fatal(1,"imprecise interrupt PC %h",saved_pc[0]);
-            if(dut.csr_inst.mstatus!==32'h1888)$fatal(1,"MRET did not restore interrupt state");
+            if(dut.csr_inst.mstatus!==32'h88)$fatal(1,"MRET did not restore interrupt state");
         end else if(scenario=="irq_masked" || scenario=="irq_global_masked")begin if(!irq_raised || traps!=0)$fatal(1,"disabled IRQ taken");end
         else if(scenario=="mret" || scenario=="mret_pipe1")begin
             if(traps!=0 || returns!=1)$fatal(1,"wrong MRET flow");
-            ck(20,77);if(dut.csr_inst.mscratch!==32'h123 || dut.csr_inst.mstatus!==32'h1888)$fatal(1,"MRET state");
+            ck(20,77);if(dut.csr_inst.mscratch!==32'h123 || dut.csr_inst.mstatus!==32'h88)$fatal(1,"MRET state");
         end else if(scenario=="counters")begin
-            ck(1,0);ck(2,1);ck(3,7);ck(4,8);ck(5,'h40001101);ck(6,'h9abcdef0);ck(7,'h12345678);
+            ck(1,0);ck(2,1);ck(3,7);ck(4,8);ck(5,'h40141101);ck(6,'h9abcdef0);ck(7,'h12345678);
         end else if(scenario=="fence" || scenario=="fence_pipe1")begin if(traps!=0)$fatal(1,"FENCE/WFI trapped");ck(20,77);end
         else begin
             if(traps!=(scenario=="sync_irq"?2:1) || returns!=traps)$fatal(1,"trap/return count %0d/%0d",traps,returns);

@@ -1,14 +1,17 @@
 `timescale 1ns/1ps
 
-// RV32IMA, M-mode only. Unsupported S/H CSRs retain their address constants
-// below but raise illegal instruction; no unsupported privilege mode is advertised.
+// RV32IMA with M/S/U privilege. satp implements Bare only; no MMU or H-mode.
 module csr #(
     parameter [31:0] HART_ID = 0
 )(
     input clk, input rst,
     input trap_valid, input [31:0] trap_pc,
     input [31:0] trap_cause, input [31:0] trap_value,
-    input mret_valid,
+    input mret_valid, input sret_valid,
+    output reg [1:0] current_privilege,
+    output [1:0] data_privilege,
+    output allow_sret, allow_wfi,
+    output [31:0] supervisor_return_pc,
     input irq_software, input irq_timer, input irq_external,
     input [63:0] time_value,
     input [1:0] retire_count,
@@ -65,6 +68,10 @@ module csr #(
     localparam CSR_SCAUSE     = 12'h142;
     localparam CSR_STVAL      = 12'h143;
     localparam CSR_SIP        = 12'h144;
+    localparam CSR_SATP = 12'h180;
+    localparam CSR_SENVCFG = 12'h10a;
+    localparam CSR_MENVCFG = 12'h30a;
+    localparam CSR_MENVCFGH = 12'h31a;
     localparam CSR_SCOUNTOVF  = 12'hDA0;
 
 
@@ -86,11 +93,22 @@ module csr #(
     localparam CSR_MHARTID = 12'hF14;
     localparam CSR_MCONFIGPTR = 12'hF15;
 
-    localparam [31:0] MISA_VALUE = 32'h4000_1101; // RV32 I+M+A, no U/S/F/C.
-    localparam [31:0] MSTATUS_FIXED = 32'h0000_1800; // MPP=M, only supported mode.
-    localparam [31:0] MSTATUS_MASK = 32'h0000_0088; // MIE, MPIE.
-    localparam [31:0] MIE_MASK = 32'h0000_0888; // MEIE, MTIE, MSIE.
+    localparam [1:0] PRIV_U=2'b00, PRIV_S=2'b01, PRIV_M=2'b11;
+    localparam [31:0] MISA_VALUE = 32'h4014_1101; // RV32 I+M+A+S+U.
+    // Little endian, no FP/vector, no virtual memory: TVM/SUM/MXR are read-only 0.
+    localparam [31:0] MSTATUS_MASK = 32'h0062_19aa;
+    localparam [31:0] SSTATUS_MASK = 32'h0000_0122; // SPP, SPIE, SIE.
+    localparam [31:0] MIE_MASK = 32'h0000_0aaa;
+    localparam [31:0] SIRQ_MASK = 32'h0000_0222;
+    localparam [31:0] MEDELEG_MASK = 32'h0000_03ff; // Implemented sync causes 0..9.
     reg [31:0] mstatus, mie, mtvec, mscratch, mepc, mcause, mtval;
+    reg [31:0] medeleg, mideleg, mcounteren, scounteren;
+    reg [31:0] stvec, sscratch, sepc, scause, stval;
+    reg [31:0] supervisor_pending;
+    assign data_privilege = current_privilege==PRIV_M && mstatus[17] ? mstatus[12:11] : current_privilege;
+    assign allow_sret = current_privilege==PRIV_M || (current_privilege==PRIV_S && !mstatus[22]);
+    assign allow_wfi = current_privilege==PRIV_M || (current_privilege==PRIV_S && !mstatus[21]);
+    assign supervisor_return_pc=sepc;
     // Sixteen entries, 4-byte granularity (G=0), 34-bit physical address encoding.
     reg [7:0] pmpcfg [0:15];
     reg [31:0] pmpaddr [0:15];
@@ -107,17 +125,28 @@ module csr #(
     reg [7:0] tcontrol;
     assign trigger_control={tdata1[1],tdata1[0]};
     assign trigger_address={tdata2[1],tdata2[0]};
-    assign trigger_enable=tcontrol[3];
+    assign trigger_enable=tcontrol[3] && current_privilege==PRIV_M;
     reg [2:0] mcountinhibit;
     reg [63:0] mcycle, minstret;
     wire [31:0] misa = MISA_VALUE;
-    wire [31:0] mip = {20'b0, irq_external, 3'b0, irq_timer, 3'b0, irq_software, 3'b0};
-    wire [31:0] eligible_interrupts = mip & mie;
-    assign interrupt_pending = mstatus[3] && |eligible_interrupts;
+    wire [31:0] mip = {20'b0, irq_external, 3'b0, irq_timer, 3'b0, irq_software, 3'b0} |
+                             supervisor_pending;
+    wire [31:0] machine_interrupts = mip & mie & ~mideleg &
+        {32{current_privilege!=PRIV_M || mstatus[3]}};
+    wire [31:0] supervisor_interrupts = mip & mie & mideleg &
+        {32{current_privilege==PRIV_U || (current_privilege==PRIV_S && mstatus[1])}};
+    wire [31:0] eligible_interrupts = |machine_interrupts ? machine_interrupts : supervisor_interrupts;
+    assign interrupt_pending = |eligible_interrupts;
     assign interrupt_cause = eligible_interrupts[11] ? 32'h8000_000b :
-                             eligible_interrupts[3] ? 32'h8000_0003 : 32'h8000_0007;
-    assign trap_vector = {mtvec[31:2],2'b00} +
-        ((trap_cause[31] && mtvec[1:0] == 2'b01) ? {trap_cause[29:0],2'b00} : 32'b0);
+                             eligible_interrupts[3] ? 32'h8000_0003 :
+                             eligible_interrupts[7] ? 32'h8000_0007 :
+                             eligible_interrupts[9] ? 32'h8000_0009 :
+                             eligible_interrupts[1] ? 32'h8000_0001 : 32'h8000_0005;
+    wire trap_to_supervisor = current_privilege!=PRIV_M && trap_cause[30:5]==0 &&
+        (trap_cause[31] ? mideleg[trap_cause[4:0]] : medeleg[trap_cause[4:0]]);
+    wire [31:0] selected_tvec=trap_to_supervisor ? stvec : mtvec;
+    assign trap_vector = {selected_tvec[31:2],2'b00} +
+        ((trap_cause[31] && selected_tvec[1:0] == 2'b01) ? {trap_cause[29:0],2'b00} : 32'b0);
     assign return_pc = mepc;
 
     function csr_address_exists;
@@ -125,7 +154,10 @@ module csr #(
         begin
             case (addr)
                 CSR_MSTATUS, CSR_MISA, CSR_MIE, CSR_MTVEC, CSR_MSTATUSH,
-                CSR_MCOUNTEREN, CSR_MCOUNTINHIBIT,
+                CSR_MCOUNTEREN, CSR_MCOUNTINHIBIT, CSR_MEDELEG, CSR_MIDELEG,
+                CSR_SSTATUS, CSR_SIE, CSR_STVEC, CSR_SCOUNTEREN,
+                CSR_SSCRATCH, CSR_SEPC, CSR_SCAUSE, CSR_STVAL, CSR_SIP, CSR_SATP,
+                CSR_MENVCFG, CSR_MENVCFGH, CSR_SENVCFG,
                 CSR_MSCRATCH, CSR_MEPC, CSR_MCAUSE, CSR_MTVAL, CSR_MIP,
                 CSR_MCYCLE, CSR_MCYCLEH, CSR_MINSTRET, CSR_MINSTRETH,
                 CSR_CYCLE, CSR_CYCLEH, CSR_INSTRET, CSR_INSTRETH, CSR_TIME, CSR_TIMEH,
@@ -139,19 +171,44 @@ module csr #(
         end
     endfunction
 
+    function csr_accessible;
+        input [11:0] addr;
+        input [1:0] privilege;
+        input [31:0] status, machine_counteren, supervisor_counteren;
+        reg [4:0] counter_bit;
+        begin
+            csr_accessible=csr_address_exists(addr) && privilege>=addr[9:8];
+            if (addr==CSR_SATP && privilege==PRIV_S && status[20]) csr_accessible=0;
+            if (addr==CSR_CYCLE || addr==CSR_CYCLEH || addr==CSR_TIME ||
+                addr==CSR_TIMEH || addr==CSR_INSTRET || addr==CSR_INSTRETH) begin
+                counter_bit = {3'b0,addr[1:0]};
+                if (privilege!=PRIV_M && !machine_counteren[counter_bit]) csr_accessible=0;
+                if (privilege==PRIV_U && !supervisor_counteren[counter_bit]) csr_accessible=0;
+            end
+        end
+    endfunction
+
     // A single normalization function is shared by commit and forwarding.
     function [31:0] normalize_write;
         input [11:0] addr;
         input [31:0] value;
         begin
             case (addr)
-                CSR_MSTATUS: normalize_write = MSTATUS_FIXED | (value & MSTATUS_MASK);
+                CSR_MSTATUS: normalize_write = (value & MSTATUS_MASK & ~32'h1800) |
+                    (value[12:11]==2'b10 ? 32'b0 : (value & 32'h1800));
+                CSR_SSTATUS: normalize_write = value & SSTATUS_MASK;
+                CSR_MEDELEG: normalize_write = value & MEDELEG_MASK;
+                CSR_MIDELEG: normalize_write = value & SIRQ_MASK;
+                CSR_SIE: normalize_write = value & mideleg & MIE_MASK;
+                CSR_SIP: normalize_write = value & mideleg & 32'h2;
+                CSR_MIP: normalize_write = value & SIRQ_MASK;
                 CSR_MISA: normalize_write = MISA_VALUE;
                 CSR_MIE: normalize_write = value & MIE_MASK;
-                CSR_MTVEC: normalize_write = {value[31:2],1'b0,(value[1:0] == 2'b01)};
-                CSR_MEPC: normalize_write = {value[31:2],2'b0};
+                CSR_MTVEC, CSR_STVEC: normalize_write = {value[31:2],1'b0,(value[1:0] == 2'b01)};
+                CSR_MEPC, CSR_SEPC: normalize_write = {value[31:2],2'b0};
                 CSR_MCOUNTINHIBIT: normalize_write = value & 32'h5;
-                CSR_MCOUNTEREN, CSR_MSTATUSH: normalize_write = 0;
+                CSR_MCOUNTEREN, CSR_SCOUNTEREN: normalize_write = value & 32'h7;
+                CSR_MSTATUSH, CSR_MENVCFG, CSR_MENVCFGH, CSR_SENVCFG, CSR_SATP: normalize_write = 0;
                 default: normalize_write = value;
             endcase
         end
@@ -161,6 +218,9 @@ module csr #(
         input [11:0] addr;
         begin
             case (addr)
+                CSR_SSTATUS: backing_address=CSR_MSTATUS;
+                CSR_SIE: backing_address=CSR_MIE;
+                CSR_SIP: backing_address=CSR_MIP;
                 CSR_CYCLE: backing_address = CSR_MCYCLE;
                 CSR_CYCLEH: backing_address = CSR_MCYCLEH;
                 CSR_INSTRET: backing_address = CSR_MINSTRET;
@@ -177,22 +237,41 @@ module csr #(
         input [47:0] addresses;
         input [127:0] values;
         integer i;
+        reg [31:0] base, incoming;
+        reg [11:0] target;
         begin
-            forward_value = value;
-            for (i=0;i<4;i=i+1)
-                if (valid[i] && csr_address_exists(addresses[12*i +:12]) &&
-                    addresses[12*i +:12] != CSR_MIP &&
-                    !(addresses[12*i +:12] >= 12'h3a0 && addresses[12*i +:12] <= 12'h3bf) &&
-                    addresses[12*i+4 +:8] != 8'h7a &&
-                    addresses[12*i+10 +:2] != 2'b11 &&
-                    backing_address(addr) == backing_address(addresses[12*i +:12]))
-                    forward_value = normalize_write(addresses[12*i +:12],values[32*i +:32]);
+            case (backing_address(addr))
+                CSR_MSTATUS: base=mstatus;
+                CSR_MIE: base=mie;
+                CSR_MIP: base=mip;
+                default: base=value;
+            endcase
+            for (i=0;i<4;i=i+1) begin
+                target=addresses[12*i +:12];
+                incoming=normalize_write(target,values[32*i +:32]);
+                if (valid[i] && csr_accessible(target,current_privilege,mstatus,mcounteren,scounteren) &&
+                    !(target>=12'h3a0 && target<=12'h3bf) && target[11:4]!=8'h7a &&
+                    target[11:10]!=2'b11 && backing_address(addr)==backing_address(target)) begin
+                    case(target)
+                        CSR_SSTATUS: base=(base & ~SSTATUS_MASK) | incoming;
+                        CSR_SIE: base=(base & ~(mideleg & MIE_MASK)) | incoming;
+                        CSR_SIP: base=(base & ~(mideleg & 32'h2)) | incoming;
+                        CSR_MIP: base=(base & ~SIRQ_MASK) | incoming;
+                        default: base=incoming;
+                    endcase
+                end
+            end
+            case(addr)
+                CSR_SSTATUS: forward_value=base & SSTATUS_MASK;
+                CSR_SIE, CSR_SIP: forward_value=base & mideleg;
+                default: forward_value=base;
+            endcase
         end
     endfunction
 
-    assign csr_rillegal_pipe0 = !rst && csr_rvalid_pipe0 && !csr_address_exists(csr_raddr_pipe0);
+    assign csr_rillegal_pipe0 = !rst && csr_rvalid_pipe0 && !csr_accessible(csr_raddr_pipe0,current_privilege,mstatus,mcounteren,scounteren);
     assign csr_willegal_pipe0 = !rst && csr_wvalid_pipe0 &&
-        (!csr_address_exists(csr_waddr_pipe0) || csr_waddr_pipe0[11:10] == 2'b11);
+        (!csr_accessible(csr_waddr_pipe0,current_privilege,mstatus,mcounteren,scounteren) || csr_waddr_pipe0[11:10] == 2'b11);
     always @(*) begin
         csr_rdata_pipe0 = 0;
         if (!rst && csr_rvalid_pipe0) begin
@@ -202,6 +281,18 @@ module csr #(
                 12'h7a2: csr_rdata_pipe0 = tdata2[tselect];
                 12'h7a4: csr_rdata_pipe0 = 32'h4; // type 2 supported
                 12'h7a5: csr_rdata_pipe0 = {24'b0,tcontrol};
+                CSR_SSTATUS: csr_rdata_pipe0 = mstatus & SSTATUS_MASK;
+                CSR_SIE: csr_rdata_pipe0 = mie & mideleg;
+                CSR_SIP: csr_rdata_pipe0 = mip & mideleg;
+                CSR_MEDELEG: csr_rdata_pipe0 = medeleg;
+                CSR_MIDELEG: csr_rdata_pipe0 = mideleg;
+                CSR_MCOUNTEREN: csr_rdata_pipe0 = mcounteren;
+                CSR_SCOUNTEREN: csr_rdata_pipe0 = scounteren;
+                CSR_STVEC: csr_rdata_pipe0 = stvec;
+                CSR_SSCRATCH: csr_rdata_pipe0 = sscratch;
+                CSR_SEPC: csr_rdata_pipe0 = sepc;
+                CSR_SCAUSE: csr_rdata_pipe0 = scause;
+                CSR_STVAL: csr_rdata_pipe0 = stval;
                 CSR_MSTATUS: csr_rdata_pipe0 = mstatus;
                 CSR_MISA: csr_rdata_pipe0 = misa;
                 CSR_MIE: csr_rdata_pipe0 = mie;
@@ -236,9 +327,9 @@ module csr #(
         end
     end
 
-    assign csr_rillegal_pipe1 = !rst && csr_rvalid_pipe1 && !csr_address_exists(csr_raddr_pipe1);
+    assign csr_rillegal_pipe1 = !rst && csr_rvalid_pipe1 && !csr_accessible(csr_raddr_pipe1,current_privilege,mstatus,mcounteren,scounteren);
     assign csr_willegal_pipe1 = !rst && csr_wvalid_pipe1 &&
-        (!csr_address_exists(csr_waddr_pipe1) || csr_waddr_pipe1[11:10] == 2'b11);
+        (!csr_accessible(csr_waddr_pipe1,current_privilege,mstatus,mcounteren,scounteren) || csr_waddr_pipe1[11:10] == 2'b11);
     always @(*) begin
         csr_rdata_pipe1 = 0;
         if (!rst && csr_rvalid_pipe1) begin
@@ -248,6 +339,18 @@ module csr #(
                 12'h7a2: csr_rdata_pipe1 = tdata2[tselect];
                 12'h7a4: csr_rdata_pipe1 = 32'h4; // type 2 supported
                 12'h7a5: csr_rdata_pipe1 = {24'b0,tcontrol};
+                CSR_SSTATUS: csr_rdata_pipe1 = mstatus & SSTATUS_MASK;
+                CSR_SIE: csr_rdata_pipe1 = mie & mideleg;
+                CSR_SIP: csr_rdata_pipe1 = mip & mideleg;
+                CSR_MEDELEG: csr_rdata_pipe1 = medeleg;
+                CSR_MIDELEG: csr_rdata_pipe1 = mideleg;
+                CSR_MCOUNTEREN: csr_rdata_pipe1 = mcounteren;
+                CSR_SCOUNTEREN: csr_rdata_pipe1 = scounteren;
+                CSR_STVEC: csr_rdata_pipe1 = stvec;
+                CSR_SSCRATCH: csr_rdata_pipe1 = sscratch;
+                CSR_SEPC: csr_rdata_pipe1 = sepc;
+                CSR_SCAUSE: csr_rdata_pipe1 = scause;
+                CSR_STVAL: csr_rdata_pipe1 = stval;
                 CSR_MSTATUS: csr_rdata_pipe1 = mstatus;
                 CSR_MISA: csr_rdata_pipe1 = misa;
                 CSR_MIE: csr_rdata_pipe1 = mie;
@@ -282,43 +385,83 @@ module csr #(
         end
     end
 
-    wire write0 = csr_wvalid_pipe0 && !csr_willegal_pipe0 && !trap_valid && !mret_valid;
-    wire write1 = csr_wvalid_pipe1 && !csr_willegal_pipe1 && !trap_valid && !mret_valid;
-    // The core issues at most one CSR per group; pipe1 wins if both write a CSR.
+    wire write0 = csr_wvalid_pipe0 && !csr_willegal_pipe0 && !trap_valid && !mret_valid && !sret_valid;
+    wire write1 = csr_wvalid_pipe1 && !csr_willegal_pipe1 && !trap_valid && !mret_valid && !sret_valid;
+    // Control writes and xRET are serialized by the core. One CSR per group.
     always @(posedge clk) begin
         if (rst) begin
-            mstatus <= MSTATUS_FIXED;
-            mie <= 0; mtvec <= 0; mscratch <= 0; mepc <= 0; mcause <= 0; mtval <= 0;
+            current_privilege<=PRIV_M; mstatus<=32'h1800;
+            mie<=0; mtvec<=0; mscratch<=0; mepc<=0; mcause<=0; mtval<=0;
+            medeleg<=0; mideleg<=0; mcounteren<=0; scounteren<=0;
+            stvec<=0; sscratch<=0; sepc<=0; scause<=0; stval<=0; supervisor_pending<=0;
         end else if (trap_valid) begin
-            mepc <= {trap_pc[31:2],2'b0};
-            mcause <= trap_cause;
-            mtval <= trap_value;
-            mstatus <= MSTATUS_FIXED | {24'b0,mstatus[3],7'b0};
+            if (trap_to_supervisor) begin
+                sepc<={trap_pc[31:2],2'b0}; scause<=trap_cause; stval<=trap_value;
+                mstatus[8]<=current_privilege==PRIV_S;
+                mstatus[5]<=mstatus[1]; mstatus[1]<=0;
+                current_privilege<=PRIV_S;
+            end else begin
+                mepc<={trap_pc[31:2],2'b0}; mcause<=trap_cause; mtval<=trap_value;
+                mstatus[12:11]<=current_privilege;
+                mstatus[7]<=mstatus[3]; mstatus[3]<=0;
+                current_privilege<=PRIV_M;
+            end
         end else if (mret_valid) begin
-            mstatus <= MSTATUS_FIXED | 32'h80 | {28'b0,mstatus[7],3'b0};
+            current_privilege<=mstatus[12:11];
+            mstatus[3]<=mstatus[7]; mstatus[7]<=1; mstatus[12:11]<=PRIV_U;
+            if (mstatus[12:11]!=PRIV_M) mstatus[17]<=0;
+        end else if (sret_valid) begin
+            current_privilege<=mstatus[8] ? PRIV_S : PRIV_U;
+            mstatus[1]<=mstatus[5]; mstatus[5]<=1; mstatus[8]<=0; mstatus[17]<=0;
         end else begin
             if (write0) begin
                 case (csr_waddr_pipe0)
-                    CSR_MSTATUS: mstatus <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MIE: mie <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MTVEC: mtvec <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MSCRATCH: mscratch <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MEPC: mepc <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MCAUSE: mcause <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    CSR_MTVAL: mtval <= normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
-                    default: begin end // Fixed, hardware-owned or counter CSR.
+                    CSR_MSTATUS: mstatus<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MIE: mie<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MTVEC: mtvec<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MSCRATCH: mscratch<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MEPC: mepc<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MCAUSE: mcause<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MTVAL: mtval<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MEDELEG: medeleg<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MIDELEG: mideleg<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_MCOUNTEREN: mcounteren<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_SCOUNTEREN: scounteren<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_STVEC: stvec<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_SSCRATCH: sscratch<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_SEPC: sepc<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_SCAUSE: scause<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_STVAL: stval<=normalize_write(csr_waddr_pipe0,csr_wdata_pipe0);
+                    CSR_SSTATUS: mstatus<=(mstatus & ~SSTATUS_MASK) | normalize_write(CSR_SSTATUS,csr_wdata_pipe0);
+                    CSR_SIE: mie<=(mie & ~(mideleg & MIE_MASK)) | normalize_write(CSR_SIE,csr_wdata_pipe0);
+                    CSR_MIP: supervisor_pending<=normalize_write(CSR_MIP,csr_wdata_pipe0);
+                    CSR_SIP: supervisor_pending<=(supervisor_pending & ~(mideleg & 32'h2)) | normalize_write(CSR_SIP,csr_wdata_pipe0);
+                    default: begin end
                 endcase
             end
             if (write1) begin
                 case (csr_waddr_pipe1)
-                    CSR_MSTATUS: mstatus <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MIE: mie <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MTVEC: mtvec <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MSCRATCH: mscratch <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MEPC: mepc <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MCAUSE: mcause <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    CSR_MTVAL: mtval <= normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
-                    default: begin end // Fixed, hardware-owned or counter CSR.
+                    CSR_MSTATUS: mstatus<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MIE: mie<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MTVEC: mtvec<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MSCRATCH: mscratch<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MEPC: mepc<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MCAUSE: mcause<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MTVAL: mtval<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MEDELEG: medeleg<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MIDELEG: mideleg<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_MCOUNTEREN: mcounteren<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_SCOUNTEREN: scounteren<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_STVEC: stvec<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_SSCRATCH: sscratch<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_SEPC: sepc<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_SCAUSE: scause<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_STVAL: stval<=normalize_write(csr_waddr_pipe1,csr_wdata_pipe1);
+                    CSR_SSTATUS: mstatus<=(mstatus & ~SSTATUS_MASK) | normalize_write(CSR_SSTATUS,csr_wdata_pipe1);
+                    CSR_SIE: mie<=(mie & ~(mideleg & MIE_MASK)) | normalize_write(CSR_SIE,csr_wdata_pipe1);
+                    CSR_MIP: supervisor_pending<=normalize_write(CSR_MIP,csr_wdata_pipe1);
+                    CSR_SIP: supervisor_pending<=(supervisor_pending & ~(mideleg & 32'h2)) | normalize_write(CSR_SIP,csr_wdata_pipe1);
+                    default: begin end
                 endcase
             end
         end
@@ -333,7 +476,7 @@ module csr #(
         if (rst) begin
             tselect<=0; tdata1[0]<=0; tdata1[1]<=0;
             tdata2[0]<=0; tdata2[1]<=0; tcontrol<=0;
-        end else if (trap_valid) begin
+        end else if (trap_valid && !trap_to_supervisor) begin
             tcontrol <= {tcontrol[3],7'b0}; // MPTE=MTE; MTE=0 prevents recursive traps.
         end else if (mret_valid) begin
             tcontrol <= 8'h80 | {4'b0,tcontrol[7],3'b0};

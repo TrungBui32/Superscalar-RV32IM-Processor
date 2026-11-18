@@ -306,7 +306,8 @@ module decode_unit(
             7'h0f: illegal_instruction = !(Funct3 == 0 || Funct3 == 1);
             CSR_opcode: illegal_instruction = !csr_rvalid &&
                 !(Instruction == 32'h00000073 || Instruction == 32'h00100073 ||
-                  Instruction == 32'h30200073 || Instruction == 32'h10500073);
+                  Instruction == 32'h30200073 || Instruction == 32'h10200073 ||
+                  Instruction == 32'h10500073);
             A_opcode: illegal_instruction = !atomic_encoding_valid;
             default: illegal_instruction = 1'b1;
         endcase

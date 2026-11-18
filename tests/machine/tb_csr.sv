@@ -17,6 +17,10 @@ module tb_machine_csr;
     wire [63:0] trigger_control, trigger_address; wire trigger_enable;
     wire [127:0] pmp_config; wire [511:0] pmp_address;
     wire csr_rillegal_pipe0,csr_rillegal_pipe1,csr_willegal_pipe0,csr_willegal_pipe1;
+    reg sret_valid=0;
+    wire [1:0] current_privilege,data_privilege;
+    wire allow_sret,allow_wfi;
+    wire [31:0] supervisor_return_pc;
     csr dut(.*);
     reg clock_running=1;
     always #5 if(clock_running) clk=~clk;
@@ -31,7 +35,9 @@ module tb_machine_csr;
     function address_supported(input [11:0] address);
         begin
             case(address)
-                12'h300,12'h301,12'h304,12'h305,12'h306,12'h310,12'h320,
+                12'h300,12'h301,12'h302,12'h303,12'h304,12'h305,12'h306,12'h310,12'h320,
+                12'h100,12'h104,12'h105,12'h106,12'h10a,12'h140,12'h141,
+                12'h142,12'h143,12'h144,12'h180,12'h30a,12'h31a,
                 12'h340,12'h341,12'h342,12'h343,12'h344,
                 12'hb00,12'hb02,12'hb80,12'hb82,
                 12'hc00,12'hc01,12'hc02,12'hc80,12'hc81,12'hc82,
@@ -61,26 +67,26 @@ module tb_machine_csr;
         end
         csr_wvalid_pipe0=0;csr_wvalid_pipe1=0;clock_running=1;
         for(bit_index=0;bit_index<32;bit_index++)begin
-            wr('h300,32'b1<<bit_index);ck('h300,32'h1800 | ((32'b1<<bit_index)&32'h88));
-            wr('h304,32'b1<<bit_index);ck('h304,(32'b1<<bit_index)&32'h888);
+            wr('h300,32'b1<<bit_index);ck('h300,bit_index==12 ? 32'b0 : ((32'b1<<bit_index)&32'h6219aa));
+            wr('h304,32'b1<<bit_index);ck('h304,(32'b1<<bit_index)&32'haaa);
             wr('h320,32'b1<<bit_index);ck('h320,(32'b1<<bit_index)&32'h5);
         end
         wr('h300,0);wr('h304,0);wr('h320,0);
-        ck('h301,'h40001101);wr('h301,0);ck('h301,'h40001101);
-        ck('h300,'h1800);wr('h300,32'hffffffff);ck('h300,'h1888);
-        wr('h300,0);ck('h300,'h1800);
-        wr('h304,32'hffffffff);ck('h304,'h888);
+        ck('h301,'h40141101);wr('h301,0);ck('h301,'h40141101);
+        ck('h300,0);wr('h300,32'hffffffff);ck('h300,'h6219aa);
+        wr('h300,0);ck('h300,0);
+        wr('h304,32'hffffffff);ck('h304,'haaa);
         wr('h310,32'hffffffff);ck('h310,0);
-        wr('h306,32'hffffffff);ck('h306,0);
+        wr('h306,32'hffffffff);ck('h306,7);
         wr('h305,'h123);ck('h305,'h120);
         wr('h305,'h125);ck('h305,'h125);
         wr('h341,'h123);ck('h341,'h120);
         ck('hf11,0);ck('hf12,0);ck('hf13,0);ck('hf14,0);ck('hf15,0);
         csr_waddr_pipe0='hf14;csr_wvalid_pipe0=1;#1;
         if(!csr_willegal_pipe0)$fatal(1,"read-only write accepted");csr_wvalid_pipe0=0;
-        csr_raddr_pipe0='h100;csr_raddr_pipe1='h34a;#1;
+        csr_raddr_pipe0='h600;csr_raddr_pipe1='h34a;#1;
         if(!csr_rillegal_pipe0 || !csr_rillegal_pipe1)$fatal(1,"unsupported S/H CSR exposed");
-        wr('h344,32'hffffffff);ck('h344,0);
+        wr('h344,32'hffffffff);ck('h344,'h222);wr('h344,0);
         irq_software=1;irq_timer=1;irq_external=1;ck('h344,'h888);
         if(interrupt_pending)$fatal(1,"global interrupt enable ignored");
         wr('h300,8);#1;if(!interrupt_pending || interrupt_cause!==32'h8000000b)$fatal(1,"external priority");
@@ -95,7 +101,7 @@ module tb_machine_csr;
         ck('h341,'h124);ck('h342,32'h80000007);ck('h343,'hdeadbeef);ck('h300,'h1880);ck('h340,0);
         if(interrupt_pending)$fatal(1,"trap did not disable interrupts");
         @(negedge clk);mret_valid=1;@(negedge clk);mret_valid=0;
-        ck('h300,'h1888);if(!interrupt_pending || return_pc!=='h124)$fatal(1,"MRET state");
+        ck('h300,'h88);if(!interrupt_pending || return_pc!=='h124)$fatal(1,"MRET state");
         irq_timer=0;#1;if(interrupt_pending)$fatal(1,"pending did not follow hardware");
         time_value=64'h123456789abcdef0;ck('hc01,'h9abcdef0);ck('hc81,'h12345678);
 

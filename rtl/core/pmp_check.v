@@ -3,6 +3,7 @@
 // successor arithmetic before the cache registers, off the access-address path.
 // Lowest matching entry wins; a partially covered access always faults.
 module pmp_check(
+    input [1:0] privilege, // Effective privilege; M bypasses unlocked entries.
     input [127:0] config_bytes,
     input [15:0] active_entries,
     input [543:0] lower_last_words,
@@ -20,9 +21,9 @@ module pmp_check(
     wire [15:0] entry_matches, permissions, high_faults;
     wire [15:0] winner=entry_matches & (~entry_matches+16'd1);
     wire [15:0] fault_select=winner & high_faults;
-    // A miss has no winner and therefore no denial. This avoids a second
-    // wide match reduction alongside the selected entry's permission result.
-    assign allow=(size==3'd1 || size==3'd2 || size==3'd4) && no_wrap && !(|(winner & ~permissions));
+    // A miss is allowed only for M-mode. The selected entry still has to
+    // contain the complete access, including when M bypasses its permissions.
+    assign allow=(size==3'd1 || size==3'd2 || size==3'd4) && no_wrap && (privilege==2'b11 || |winner) && !(|(winner & ~permissions));
     genvar i;
     generate for (i=0; i<16; i=i+1) begin: entry
         wire [7:0] cfg=config_bytes[i*8 +:8];
@@ -35,7 +36,7 @@ module pmp_check(
         assign entry_matches[i]=active_entries[i] && below_upper &&
                                 (!below_lower || reaches_lower);
         assign permissions[i]=!below_lower && below_upper && !crosses_upper &&
-                              (!cfg[7] || (cfg[2:0] & access_type)==access_type);
+                              ((privilege==2'b11 && !cfg[7]) || (cfg[2:0] & access_type)==access_type);
         assign high_faults[i]=!below_lower && crosses_upper;
     end endgenerate
     // Select a boundary only for a partial high-end match. All other cases

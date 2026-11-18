@@ -4,6 +4,7 @@ module pmp_check_equivalence(
     input [31:0] address,
     input [2:0] size, access_type, permissions,
     input enabled, locked,
+    input [1:0] privilege,
     input [32:0] low_word, high_word,
     output equivalent
 );
@@ -13,7 +14,7 @@ module pmp_check_equivalence(
     wire [127:0] cfg={120'b0,locked,4'b0,permissions};
     wire allow;
     wire [31:0] fault_address;
-    pmp_check dut(.config_bytes(cfg),.active_entries({15'b0,enabled}),
+    pmp_check dut(.privilege(privilege),.config_bytes(cfg),.active_entries({15'b0,enabled}),
         .lower_last_words({510'b0,lower_last}),.upper_last_words({510'b0,upper_last}),
         .address(address),.size(size),.access_type(access_type),
         .allow(allow),.fault_address(fault_address));
@@ -22,7 +23,8 @@ module pmp_check_equivalence(
     wire intersects=enabled && first_byte<upper && end_byte>lower;
     wire contained=first_byte>=lower && end_byte<=upper;
     wire reference_allow=end_byte<=35'h100000000 &&
-        (!intersects || (contained && (!locked || (permissions & access_type)==access_type)));
+        ((!intersects && privilege==2'b11) ||
+         (intersects && contained && ((privilege==2'b11 && !locked) || (permissions & access_type)==access_type)));
     wire [31:0] reference_fault=(intersects && first_byte>=lower && end_byte>upper) ?
                                 upper[31:0] : address;
     // The decoder marks empty ranges inactive. These are the RV32 access sizes.
@@ -36,6 +38,7 @@ endmodule
 // per-entry crosses_upper predicate. The byte-domain proof above independently
 // establishes per-entry semantics, including this fault-boundary relation.
 module pmp_priority_equivalence(
+    input [1:0] privilege,
     input [15:0] matches, permissions, high_faults,
     input [543:0] upper_last_words,
     input [31:0] address,
@@ -43,7 +46,7 @@ module pmp_priority_equivalence(
 );
     wire allow;
     wire [31:0] fault_address;
-    pmp_check dut(.config_bytes(128'b0),.active_entries(16'b0),
+    pmp_check dut(.privilege(privilege),.config_bytes(128'b0),.active_entries(16'b0),
         .lower_last_words(544'b0),.upper_last_words(upper_last_words),
         .address(address),.size(3'd1),.access_type(3'b001),
         .entry_matches(matches),.permissions(permissions),.high_faults(high_faults),
@@ -54,7 +57,7 @@ module pmp_priority_equivalence(
     reg valid_faults;
     integer i;
     always @(*) begin
-        reference_allow=1;
+        reference_allow=(privilege==2'b11);
         reference_fault=address;
         boundary_word=0;
         valid_faults=1;

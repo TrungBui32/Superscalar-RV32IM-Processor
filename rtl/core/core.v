@@ -804,12 +804,12 @@ module core #(
                              (csr_wfire_mem_pipe1 && is_pmp_csr(csr_waddr_mem_pipe1));
     wire [1:0] pmp_fetch_allow, pmp_data_allow;
     wire [31:0] pmp_badaddr0, pmp_badaddr1;
-    pmp_check pmp_fetch0(.config_bytes(pmp_check_config),
+    pmp_check pmp_fetch0(.privilege(current_privilege),.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(pc_mem_pipe0), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[0]), .fault_address());
-    pmp_check pmp_data0(.config_bytes(pmp_check_config),
+    pmp_check pmp_data0(.privilege(data_privilege),.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe0), .size(3'd1 << funct3_mem_pipe0[1:0]),
@@ -817,12 +817,12 @@ module core #(
          (instruction_mem_pipe0[31:27]==5'b00011 ? 3'b010 : 3'b011)) :
          (MemRead_mem_pipe0 ? 3'b001 : 3'b010)),
         .allow(pmp_data_allow[0]), .fault_address(pmp_badaddr0));
-    pmp_check pmp_fetch1(.config_bytes(pmp_check_config),
+    pmp_check pmp_fetch1(.privilege(current_privilege),.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(pc_mem_pipe1), .size(3'd4), .access_type(3'b100),
         .allow(pmp_fetch_allow[1]), .fault_address());
-    pmp_check pmp_data1(.config_bytes(pmp_check_config),
+    pmp_check pmp_data1(.privilege(data_privilege),.config_bytes(pmp_check_config),
         .active_entries(pmp_active_entries),
         .lower_last_words(pmp_lower_last_words),.upper_last_words(pmp_upper_last_words),
         .address(alu_out_mem_pipe1), .size(3'd1 << funct3_mem_pipe1[1:0]),
@@ -911,7 +911,7 @@ module core #(
         .mem_rsp_valid(atomic_bus_rsp_valid), .mem_rsp_ready(atomic_bus_rsp_ready),
         .mem_rsp_rdata(atomic_bus_rsp_data), .mem_rsp_error(atomic_bus_rsp_error),
         .invalidate_reservation((|MemWrite_out_pipe0) || (|MemWrite_out_pipe1)),
-        .clear_reservation(csr_trap_fire || mret_fire || fencei_fire || pmp_update_accepted)
+        .clear_reservation(csr_trap_fire || mret_fire || sret_fire || fencei_fire || pmp_update_accepted)
     );
     // Control CSR writes remain barriers; data CSR accesses bypass older
     // EX/MEM writes. One CSR per issue group keeps same-cycle RMW ordered.
@@ -932,7 +932,7 @@ module core #(
             case (addr)
                 12'h300, 12'h100, 12'h301, 12'h302, 12'h303,
                 12'h304, 12'h104, 12'h344, 12'h144,
-                12'h305, 12'h105, 12'h306, 12'h106:
+                12'h305, 12'h105, 12'h306, 12'h106, 12'h180, 12'h30a, 12'h10a:
                     csr_control_write = 1'b1;
                 default: csr_control_write = (addr >= 12'h3a0 && addr <= 12'h3bf) || addr[11:4]==8'h7a;
             endcase
@@ -963,7 +963,10 @@ module core #(
     wire irq_pending;
     wire [31:0] irq_cause;
     wire irq_fire;
-    wire mret_fire, fencei_fire;
+    wire mret_fire, sret_fire, fencei_fire;
+    wire [1:0] current_privilege, data_privilege;
+    wire allow_sret, allow_wfi;
+    wire [31:0] supervisor_return_pc;
     wire [31:0] machine_return_pc;
     wire [31:0] trap_cause, trap_value;
     reg [31:0] pre_cause0, pre_cause1, pre_value0, pre_value1;
@@ -1015,6 +1018,10 @@ module core #(
     assign csr_forward_valid[3] = CSR_FORWARD_ENABLE && csr_wvalid_ex_pipe1 &&
         !csr_rillegal_ex_pipe1 && !csr_rillegal_ex_pipe0 && !csr_fault_pending_mem && !mem_redirect;
     wire csr_fault_pending_mem = csr_trap_pipe0 || csr_trap_pipe1;
+    wire system_illegal0 =
+        (instruction_mem_pipe0==32'h30200073 && current_privilege!=2'b11) ||
+        (instruction_mem_pipe0==32'h10200073 && !allow_sret) ||
+        (instruction_mem_pipe0==32'h10500073 && !allow_wfi);
     always @(*) begin
         pre_fault0 = 1'b0;
         pre_cause0 = 32'd2;
@@ -1023,9 +1030,9 @@ module core #(
             pre_fault0=1'b1; pre_cause0=32'd3; pre_value0=pc_mem_pipe0;
         end else if (fetch_fault_mem_pipe0 || !pmp_fetch_allow[0]) begin
             pre_fault0=1'b1; pre_cause0=32'd1; pre_value0=pc_mem_pipe0;
-        end else if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0) pre_fault0 = 1'b1;
+        end else if (illegal_mem_pipe0 || csr_rillegal_mem_pipe0 || system_illegal0) pre_fault0 = 1'b1;
         else if (instruction_mem_pipe0 == 32'h00000073) begin
-            pre_fault0 = 1'b1; pre_cause0 = 32'd11; pre_value0 = 0;
+            pre_fault0 = 1'b1; pre_cause0 = 32'd8 + {30'b0,current_privilege}; pre_value0 = 0;
         end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe0 == 32'h00100073) begin
             pre_fault0 = 1'b1; pre_cause0 = 32'd3; pre_value0 = pc_mem_pipe0;
         end else if ((is_jal_mem_pipe0 || is_jalr_mem_pipe0 ||
@@ -1054,6 +1061,10 @@ module core #(
             pre_value0=pmp_badaddr0;
         end
     end
+    wire system_illegal1 =
+        (instruction_mem_pipe1==32'h30200073 && current_privilege!=2'b11) ||
+        (instruction_mem_pipe1==32'h10200073 && !allow_sret) ||
+        (instruction_mem_pipe1==32'h10500073 && !allow_wfi);
     always @(*) begin
         pre_fault1 = 1'b0;
         pre_cause1 = 32'd2;
@@ -1062,9 +1073,9 @@ module core #(
             pre_fault1=1'b1; pre_cause1=32'd3; pre_value1=pc_mem_pipe1;
         end else if (fetch_fault_mem_pipe1 || !pmp_fetch_allow[1]) begin
             pre_fault1=1'b1; pre_cause1=32'd1; pre_value1=pc_mem_pipe1;
-        end else if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1) pre_fault1 = 1'b1;
+        end else if (illegal_mem_pipe1 || csr_rillegal_mem_pipe1 || system_illegal1) pre_fault1 = 1'b1;
         else if (instruction_mem_pipe1 == 32'h00000073) begin
-            pre_fault1 = 1'b1; pre_cause1 = 32'd11; pre_value1 = 0;
+            pre_fault1 = 1'b1; pre_cause1 = 32'd8 + {30'b0,current_privilege}; pre_value1 = 0;
         end else if (!DEBUG_HALT_ON_EBREAK && instruction_mem_pipe1 == 32'h00100073) begin
             pre_fault1 = 1'b1; pre_cause1 = 32'd3; pre_value1 = pc_mem_pipe1;
         end else if ((is_jal_mem_pipe1 || is_jalr_mem_pipe1 ||
@@ -1119,6 +1130,9 @@ module core #(
     assign mret_fire = pipeline_can_advance && !csr_trap_pipe0 && !csr_trap_pipe1 &&
         ((valid_mem_pipe0 && instruction_mem_pipe0 == 32'h30200073) ||
          (valid_mem_pipe1 && instruction_mem_pipe1 == 32'h30200073));
+    assign sret_fire = pipeline_can_advance && !csr_trap_pipe0 && !csr_trap_pipe1 &&
+        ((valid_mem_pipe0 && instruction_mem_pipe0==32'h10200073) ||
+         (valid_mem_pipe1 && instruction_mem_pipe1==32'h10200073));
     assign fencei_fire = pipeline_can_advance &&
         ((valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f && instruction_mem_pipe0[14:12] == 1) ||
          (valid_mem_pipe1 && instruction_mem_pipe1[6:0] == 7'h0f && instruction_mem_pipe1[14:12] == 1));
@@ -1506,6 +1520,7 @@ module core #(
             PC_value = csr_trap_vector;
         end
         else if (mret_fire) begin PC_value = machine_return_pc; end
+        else if (sret_fire) begin PC_value = supervisor_return_pc; end
         else if (fencei_fire) begin
             PC_value = (valid_mem_pipe0 && instruction_mem_pipe0[6:0] == 7'h0f) ? pcplus4_mem_pipe0 : pcplus4_mem_pipe1;
         end
@@ -1582,6 +1597,9 @@ module core #(
         .irq_software(irq_software), .irq_timer(irq_timer), .irq_external(irq_external),
         .time_value(time_value), .retire_count(retire_count),
         .interrupt_pending(irq_pending), .interrupt_cause(irq_cause),
+        .sret_valid(sret_fire), .current_privilege(current_privilege), .data_privilege(data_privilege),
+        .allow_sret(allow_sret), .allow_wfi(allow_wfi),
+        .supervisor_return_pc(supervisor_return_pc),
         .mret_valid(mret_fire), .return_pc(machine_return_pc),
         .pmp_config(pmp_config), .pmp_address(pmp_address),
         .trigger_control(trigger_control), .trigger_address(trigger_address), .trigger_enable(trigger_enable),
@@ -2227,7 +2245,7 @@ module core #(
     .csr_split(csr_split),
     .csr_trap(csr_trap_fire),
     .csr_trap_pipe0(csr_trap_pipe0 || irq_fire),
-    .system_redirect(mret_fire || fencei_fire),
+    .system_redirect(mret_fire || sret_fire || fencei_fire),
     .id_uses_rs1_pipe0(uses_rs1_id_pipe0),
     .id_uses_rs2_pipe0(uses_rs2_id_pipe0),
     .id_uses_rs1_pipe1(uses_rs1_id_pipe1),

@@ -88,7 +88,7 @@ skip_amo:
     lw a2, 0(a0)
     EQ a2, 396
     csrr a2, misa
-    EQ a2, 0x40001101
+    EQ a2, 0x40141101
     END_TEST
 .balign 4
 data: .word 0,0
